@@ -1,23 +1,38 @@
+####################################################################################################
+# This script reads PDF data files on Ag Census farm expenditures and outputs per-state CSV files #
+###################################################################################################
+# Before running, set pathnames and clear DEBUG folder to avoid overlap
 import re
 from pathlib import Path
 import pandas as pd
-import camelot.io as camelot  # [web:69]
+import camelot.io as camelot
 
-PDF_PATH = "/Users/kieran/Downloads/bama.pdf"
+# PDF path
+PDF_PATH = "/Users/kieran/Documents/GitHub/labor_and_automation/data/states/pdfs/bama.pdf"
+
+# Base project dir
 OUT_DIR = Path("/Users/kieran/Documents/GitHub/labor_and_automation")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-DEBUG_DIR = OUT_DIR / "debug_tables"
-DEBUG_DIR.mkdir(exist_ok=True)
 
+# Debug tables directory
+DEBUG_DIR = Path("/Users/kieran/Documents/GitHub/labor_and_automation/data/states/debug")
+DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+
+# Final statefile CSV directory
+STATEFILES_DIR = Path("/Users/kieran/Documents/GitHub/labor_and_automation/data/states/statefiles")
+STATEFILES_DIR.mkdir(parents=True, exist_ok=True)
+
+# Camelot parameters
 FLAVOR = "stream"
 EDGE_TOL = 500
 ROW_TOL = 10
 STRIP_TEXT = "\n"
 SPLIT_TEXT = True
 
+# Canonical categories
 CATEGORIES_CANON = [
     "Total farm production expenditures",
-    "Average per farm",  # dollars (not $1,000)
+    "Average per farm",
     "Fertilizer lime and soil conditioners purchased",
     "Chemicals purchased",
     "Seeds plants vines and trees purchased",
@@ -40,6 +55,7 @@ CATEGORIES_CANON = [
 ]
 CANON_SET = set(CATEGORIES_CANON)
 
+
 def normalize(s):
     s = "" if s is None else str(s)
     s = s.replace("\u00a0", " ")
@@ -47,18 +63,21 @@ def normalize(s):
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+
 def scrub(s):
     s = normalize(s)
     s = re.sub(r"\.{2,}", " ", s)
-    s = re.sub(r"\[.*?\]", " ", s)
+    s = re.sub(r"[.*?]", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
 
 def norm_key(s):
     s = scrub(s).lower()
     s = re.sub(r"[^a-z0-9 ]+", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
 
 CATEGORY_PATTERNS = [
     (re.compile(r"\btotal farm pr", re.I), "Total farm production expenditures"),
@@ -84,6 +103,7 @@ CATEGORY_PATTERNS = [
     (re.compile(r"\bdepreciation expenses claimed", re.I), "Depreciation expenses claimed"),
 ]
 
+
 def canonical_from_any_text(text):
     k = norm_key(text)
     if not k:
@@ -93,6 +113,7 @@ def canonical_from_any_text(text):
         if pat.search(k):
             return canon
     return None
+
 
 def split_two_numbers(cell):
     cell = normalize(cell)
@@ -104,6 +125,7 @@ def split_two_numbers(cell):
     v2 = int(nums[1]) if len(nums) >= 2 else None
     return (v1, v2)
 
+
 def to_int(x):
     x = normalize(x)
     if x in ("", "-", "—", "NA", "N/A", "(D)"):
@@ -111,6 +133,7 @@ def to_int(x):
     x = x.replace(",", "")
     m = re.search(r"-?\d+", x)
     return int(m.group()) if m else None
+
 
 def read_tables_and_write_debug():
     tables = camelot.read_pdf(
@@ -121,17 +144,17 @@ def read_tables_and_write_debug():
         edge_tol=EDGE_TOL,
         row_tol=ROW_TOL,
         strip_text=STRIP_TEXT,
-    )  # [web:126][web:74]
+    )
     for k, t in enumerate(tables):
-        table_id = f"p{int(t.page):02d}_t{k:02d}"
+        table_id = f"p{int(t.page):02d}t{k:02d}"
         t.df.to_csv(DEBUG_DIR / f"DEBUG_{table_id}_{FLAVOR}.csv", index=False, header=False)
     return tables
+
 
 def parse_debug_csv_money_only(csv_path):
     raw = pd.read_csv(csv_path, header=None, dtype=str).fillna("")
     raw = raw.map(normalize)
 
-    # find header row
     header_i = None
     for i in range(min(30, len(raw))):
         row = raw.iloc[i].tolist()
@@ -150,7 +173,6 @@ def parse_debug_csv_money_only(csv_path):
         return []
 
     def get_row(i):
-        # sometimes Camelot shifts text slightly right; give ourselves a few extra cols
         return raw.iloc[i, :1 + n + 4].tolist()
 
     records = []
@@ -162,14 +184,10 @@ def parse_debug_csv_money_only(csv_path):
         full = " ".join(scrub(x) for x in row)
         low = full.lower()
 
-        # update current category whenever we see a category header anywhere in the row
         cand = canonical_from_any_text(full)
         if cand in CANON_SET:
             current_cat = cand
 
-        # ---- MONEY ROWS ONLY ----
-
-        # 1) $1,000 paired-year row: "$1,000, 2012 2007"
         if current_cat and ("$1,000" in low) and ("2012" in low) and ("2007" in low):
             for j, county in enumerate(counties, start=1):
                 v2012, v2007 = split_two_numbers(row[j])
@@ -180,15 +198,12 @@ def parse_debug_csv_money_only(csv_path):
             i += 1
             continue
 
-        # 2) $1,000 normal row: "$1,000, 2012" then next line is 2007 values (either same row or a 2007 row)
         if current_cat and ("$1,000" in low) and ("2012" in low) and ("2007" not in low):
-            # 2012 values on this row
             for j, county in enumerate(counties, start=1):
                 v = to_int(row[j])
                 if v is not None:
                     records.append({"county": county, "year": "2012", "category": current_cat, "value": v})
 
-            # 2007 values may be next row:
             if i + 1 < len(raw):
                 nxt = get_row(i + 1)
                 nxt0 = scrub(nxt[0]).lower()
@@ -200,19 +215,15 @@ def parse_debug_csv_money_only(csv_path):
                         if v is not None:
                             records.append({"county": county, "year": "2007", "category": current_cat, "value": v})
                 elif "2007" in nxt_full and "$1,000" not in nxt_full:
-                    # sometimes 2007 values are on the next row without clean label cell
                     for j, county in enumerate(counties, start=1):
                         v1, v2 = split_two_numbers(nxt[j])
-                        # if there are two numbers, treat second as 2007; else ignore
                         if v2 is not None:
                             records.append({"county": county, "year": "2007", "category": current_cat, "value": v2})
 
             i += 1
             continue
 
-        # 3) Average per farm: money in dollars (not $1,000)
         if current_cat == "Average per farm" and ("dollars" in low) and ("2012" in low):
-            # paired-year dollars row
             if "2007" in low:
                 for j, county in enumerate(counties, start=1):
                     v2012, v2007 = split_two_numbers(row[j])
@@ -224,7 +235,6 @@ def parse_debug_csv_money_only(csv_path):
                 i += 1
                 continue
 
-            # normal layout: next row has 2012 dollars; then "2007" row; then next row has 2007 dollars
             if i + 1 < len(raw):
                 r2012 = get_row(i + 1)
                 for j, county in enumerate(counties, start=1):
@@ -243,10 +253,10 @@ def parse_debug_csv_money_only(csv_path):
             i += 1
             continue
 
-        # Explicitly ignore farms/count rows (we just don’t have any emit-path for them)
         i += 1
 
     return records
+
 
 def main():
     read_tables_and_write_debug()
@@ -262,7 +272,7 @@ def main():
 
     final = (
         df.pivot_table(index=["county", "year"], columns="category", values="value", aggfunc="first")
-          .reset_index()
+        .reset_index()
     )
 
     for c in CATEGORIES_CANON:
@@ -270,12 +280,13 @@ def main():
             final[c] = pd.NA
     final = final[["county", "year"] + CATEGORIES_CANON]
 
-    out_path = OUT_DIR / "alabama_county_year_categories.csv"
+    out_path = STATEFILES_DIR / "bama.csv"
     final.to_csv(out_path, index=False)
 
     print("Saved:", out_path)
     print("Non-missing money counts:")
     print(final[CATEGORIES_CANON].notna().sum().sort_values(ascending=False))
+
 
 if __name__ == "__main__":
     main()
