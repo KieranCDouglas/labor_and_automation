@@ -8,7 +8,7 @@ import pandas as pd
 import camelot.io as camelot
 
 # PDF path
-PDF_PATH = "/Users/kieran/Documents/GitHub/labor_and_automation/data/states/pdfs/bama.pdf"
+PDF_PATH = "/Users/kieran/Documents/GitHub/labor_and_automation/data/states/pdfs/GA_2002.pdf"
 
 # Base project dir
 OUT_DIR = Path("/Users/kieran/Documents/GitHub/labor_and_automation")
@@ -188,66 +188,66 @@ def parse_debug_csv_money_only(csv_path):
         if cand in CANON_SET:
             current_cat = cand
 
-        if current_cat and ("$1,000" in low) and ("2012" in low) and ("2007" in low):
+        if current_cat and ("$1,000" in low) and ("2007" in low) and ("2002" in low):
             for j, county in enumerate(counties, start=1):
-                v2012, v2007 = split_two_numbers(row[j])
-                if v2012 is not None:
-                    records.append({"county": county, "year": "2012", "category": current_cat, "value": v2012})
+                v2007, v2002 = split_two_numbers(row[j])
                 if v2007 is not None:
                     records.append({"county": county, "year": "2007", "category": current_cat, "value": v2007})
+                if v2002 is not None:
+                    records.append({"county": county, "year": "2002", "category": current_cat, "value": v2002})
             i += 1
             continue
 
-        if current_cat and ("$1,000" in low) and ("2012" in low) and ("2007" not in low):
+        if current_cat and ("$1,000" in low) and ("2007" in low) and ("2002" not in low):
             for j, county in enumerate(counties, start=1):
                 v = to_int(row[j])
                 if v is not None:
-                    records.append({"county": county, "year": "2012", "category": current_cat, "value": v})
+                    records.append({"county": county, "year": "2007", "category": current_cat, "value": v})
 
             if i + 1 < len(raw):
                 nxt = get_row(i + 1)
                 nxt0 = scrub(nxt[0]).lower()
                 nxt_full = " ".join(scrub(x) for x in nxt).lower()
 
-                if nxt0 == "2007":
+                if nxt0 == "2002":
                     for j, county in enumerate(counties, start=1):
                         v = to_int(nxt[j])
                         if v is not None:
-                            records.append({"county": county, "year": "2007", "category": current_cat, "value": v})
-                elif "2007" in nxt_full and "$1,000" not in nxt_full:
+                            records.append({"county": county, "year": "2002", "category": current_cat, "value": v})
+                elif "2002" in nxt_full and "$1,000" not in nxt_full:
                     for j, county in enumerate(counties, start=1):
                         v1, v2 = split_two_numbers(nxt[j])
                         if v2 is not None:
-                            records.append({"county": county, "year": "2007", "category": current_cat, "value": v2})
+                            records.append({"county": county, "year": "2002", "category": current_cat, "value": v2})
 
             i += 1
             continue
 
-        if current_cat == "Average per farm" and ("dollars" in low) and ("2012" in low):
-            if "2007" in low:
+        if current_cat == "Average per farm" and ("dollars" in low) and ("2007" in low):
+            if "2002" in low:
                 for j, county in enumerate(counties, start=1):
-                    v2012, v2007 = split_two_numbers(row[j])
-                    if v2012 is not None:
-                        records.append({"county": county, "year": "2012", "category": current_cat, "value": v2012})
+                    v2007, v2002 = split_two_numbers(row[j])
                     if v2007 is not None:
                         records.append({"county": county, "year": "2007", "category": current_cat, "value": v2007})
+                    if v2002 is not None:
+                        records.append({"county": county, "year": "2002", "category": current_cat, "value": v2002})
                 current_cat = None
                 i += 1
                 continue
 
             if i + 1 < len(raw):
-                r2012 = get_row(i + 1)
+                r2007 = get_row(i + 1)
                 for j, county in enumerate(counties, start=1):
-                    v = to_int(r2012[j])
+                    v = to_int(r2007[j])
                     if v is not None:
-                        records.append({"county": county, "year": "2012", "category": current_cat, "value": v})
+                        records.append({"county": county, "year": "2007", "category": current_cat, "value": v})
 
-                if i + 2 < len(raw) and scrub(raw.iloc[i + 2, 0]).lower() == "2007" and i + 3 < len(raw):
-                    r2007 = get_row(i + 3)
+                if i + 2 < len(raw) and scrub(raw.iloc[i + 2, 0]).lower() == "2002" and i + 3 < len(raw):
+                    r2002 = get_row(i + 3)
                     for j, county in enumerate(counties, start=1):
-                        v = to_int(r2007[j])
+                        v = to_int(r2002[j])
                         if v is not None:
-                            records.append({"county": county, "year": "2007", "category": current_cat, "value": v})
+                            records.append({"county": county, "year": "2002", "category": current_cat, "value": v})
 
             current_cat = None
             i += 1
@@ -280,7 +280,7 @@ def main():
             final[c] = pd.NA
     final = final[["county", "year"] + CATEGORIES_CANON]
 
-    out_path = STATEFILES_DIR / "bama.csv"
+    out_path = STATEFILES_DIR / "GA_2002.csv"
     final.to_csv(out_path, index=False)
 
     print("Saved:", out_path)
