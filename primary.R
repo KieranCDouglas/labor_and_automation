@@ -57,21 +57,24 @@ states_clean <- states |>
 summary(states_clean$labor_share)  # Check
 
 # pretrends graphs
-ggplot(states_clean, aes(year, labor_share, color = factor(sc_treated))) +
+ggplot(states_clean, aes(year, labor_share, color = factor(state))) +
   stat_summary(fun=mean, geom="point", size=3) +
   stat_summary(fun=mean, geom="line") +
   labs(title="Pre-trends: Labor Share by SC Exposure", y = "Labor Share of Expenditures", color = "State") +
-  theme_minimal()
-ggplot(states_clean, aes(year, mech, color = factor(sc_treated))) +
+  theme_minimal()+
+  scale_color_manual(values = c("AZ" = "#58A4B0", "CA" = "#0C7C59", "GA" = "#2B303A", "MA" = "#D64933"))
+ggplot(states_clean, aes(year, mech, color = factor(state))) +
   stat_summary(fun=mean, geom="point", size=3) +
   stat_summary(fun=mean, geom="line") +
   labs(title="Pre-trends: Mechanization", y = "Fuel/Maintenence Share of Expenditures", x = "Year", color = "State") +
-  theme_minimal()
-ggplot(states_clean, aes(year, labor_mech_r, color = factor(sc_treated))) +
+  theme_minimal()+
+  scale_color_manual(values = c("AZ" = "#58A4B0", "CA" = "#0C7C59", "GA" = "#2B303A", "MA" = "#D64933"))
+ggplot(states_clean, aes(year, labor_mech_r, color = factor(state))) +
   stat_summary(fun=mean, geom="point", size=3) +
   stat_summary(fun=mean, geom="line") +
   labs(title="Pre-trends: Labor-Mech Ratio", y = "Ratio of Labor to Mechanization Expenditures (Proxy)", x = "Year", color = "State") +
-  theme_minimal()
+  theme_minimal() +
+  scale_color_manual(values = c("AZ" = "#58A4B0", "CA" = "#0C7C59", "GA" = "#2B303A", "MA" = "#D64933"))
 
 # Pre-trends assumption check:
 states_clean <- states_clean |> 
@@ -84,7 +87,7 @@ states_clean <- states_clean |>
 # Event study: leads (pre) vs post
 es_labor <- feols(labor_share ~ i(rel_year, sc_treated, ref = 0) | county_fips + year, 
                   data = states_clean, cluster = ~state)
-etable(es_labor)
+etable(es_labor, tex = TRUE)
 # Repeat for mech, labor_mech_r
 es_mech <- feols(mech ~ i(rel_year, sc_treated, ref = 0) | county_fips + year, 
                  data = states_clean, cluster = ~state)
@@ -104,7 +107,7 @@ ggplot(states_clean, aes(year, labor_share, color = factor(sc_treated))) +
 # Stage 1: SC effect on mech
 mech_model <- feols(mech ~ post_2012 * sc_treated | county_fips + year, 
                     data = states_clean, cluster = ~state)
-etable(mech_model)
+etable(mech_model, tex = TRUE)
 # Stage 2: Total effect (your model1)
 labor_total <- feols(labor_share ~ post_2012 * sc_treated | county_fips + year, 
                      data = states_clean, cluster = ~state)
@@ -113,5 +116,5 @@ labor_total <- feols(labor_share ~ post_2012 * sc_treated | county_fips + year,
 labor_mediated <- feols(labor_share ~ post_2012 * sc_treated + mech | county_fips + year, 
                         data = states_clean, cluster = ~state)
 
-etable(list(Total = labor_total, Direct = labor_mediated))
+etable(list(Total = labor_total, Direct = labor_mediated), tex = TRUE)
 ### from this basic naive regression it seems like the story is told: in places who had experiencewd full SC activation by 2012, there was a meaningful decrease in labor share and increase in mechanization in treated states by 2012.
