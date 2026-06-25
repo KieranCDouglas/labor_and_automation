@@ -1,6 +1,9 @@
 # macOS
 .DS_Store
 
+# Data (kept local, not pushed to GitHub)
+data/
+
 # R
 .Rhistory
 .RData
