@@ -3,17 +3,19 @@
 ## Last Edited: 06/10/2025
 ####################################################################################################
 
-# begin #
-# prelude #
+#### begin ####
+### prelude ###
 install.packages("tidyverse")
 
 library(tidyverse)
 
-# load data #
+### load data ###
 census <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/expenditures_all_states_wide.csv")
+sc <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/secure1904.csv")
 
-# clean and merge #
-# 1. census data #
+### clean and merge ###
+## 1. census data ##
+# data are renamed for clarity and consistency. necesarry variables are selected and mutations convert to workable format. new variables generated as mechanization proxies.
 census_clean <- census |> 
   rename(
     state = state_alpha,
@@ -51,7 +53,36 @@ census_clean <- census |>
     repairs_exp = as.numeric(repairs_exp),
   )
 
-# 2. secure communities data #
+## 2. secure communities data ##
+# several variables are renamed for clarity and consistency. necesarry variables are selected, and mutations convert data into usable format. new variables are generated as exposure-intensity scores.
+sc_clean <- sc |> 
+  rename(
+    sex = gender,
+    age_rm = age_at_removal,
+    entry_date = centry_date,
+    detainer_date = detainer_prepare_date,
+    deportation_type = current_deportation_type,
+    apprehension_method = latest_apprehension_method
+  ) |> 
+  select(
+    mscc_code, final_charge_section, county, citizenship_country, entry_status, case_category, apprehension_method, 
+    removal_current_program, state, detainer_facility_state, detainer_facility_city, sex, age_rm, entry_date, 
+    processing_disposition_code, final_charge_code, prior_removal, departed_date, detainer_date, deportation_type
+  ) |>
+  mutate(
+    entry_date    = as.Date(entry_date,    format = "%m/%d/%Y"),
+    departed_date = as.Date(departed_date, format = "%d%b%y"),
+    detainer_date = as.Date(detainer_date, format = "%d%b%y"),
+    age_rm = as.numeric(age_rm),
+    sex = as.factor(sex),
+    deportation_type = as.factor(deportation_type),
+    entry_status = as.factor(entry_status),
+    case_category = as.factor(case_category),
+    apprehension_method = as.factor(apprehension_method),
+    prior_removal = as.integer(prior_removal == "YES")
+  )
 
-# 3. rates data #
+## 3. rates data ##
+
+
 
