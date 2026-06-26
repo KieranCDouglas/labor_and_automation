@@ -85,7 +85,7 @@ pull_year <- function(year, states = ALL_STATES) {
 
 # --- Full pull: all states, 2007 and 2012 ------------------------------------
 
-pull_all_expenditures <- function(years = c(2007, 2012)) {
+pull_all_expenditures <- function(years = c(2007, 2012, 2017)) {
   map(years, pull_year) |> bind_rows()
 }
 
@@ -131,7 +131,7 @@ pull_crops_year <- function(year, states = ALL_STATES) {
   bind_rows(results)
 }
 
-pull_all_crops <- function(years = c(2007, 2012)) {
+pull_all_crops <- function(years = c(2007, 2012, 2017)) {
   map(years, pull_crops_year) |> bind_rows()
 }
 
@@ -178,7 +178,7 @@ pull_landuse_year <- function(year, states = ALL_STATES) {
   bind_rows(results)
 }
 
-pull_all_landuse <- function(years = c(2007, 2012)) {
+pull_all_landuse <- function(years = c(2007, 2012, 2017)) {
   map(years, pull_landuse_year) |> bind_rows()
 }
 
