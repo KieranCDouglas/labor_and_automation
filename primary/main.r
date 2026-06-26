@@ -7,9 +7,11 @@
 ### prelude ###
 install.packages("tidyverse")
 install.packages("tidycensus")
+install.packages("fixest")
 
 library(tidyverse)
 library(tidycensus)
+library(fixest)
 
 ### load data ###
 census <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/expenditures_all_states_wide.csv")
@@ -39,6 +41,7 @@ census_clean <- census |>
     state, county, year, total_exp, customwork_exp, machinery_rent_exp, other_services_exp, utilities_exp, chemical_total_exp, depreciation_exp, fuel_total_exp, labor_contract_exp, labor_hired_exp, spacerent_total_exp, repairs_exp
   ) |> 
   mutate(
+    county = str_to_title(county),
     labor_share = (labor_hired_exp+labor_contract_exp)/total_exp,
     mech_share_broad = (fuel_total_exp+repairs_exp+utilities_exp+machinery_rent_exp+depreciation_exp)/total_exp,
     mech_share_narrow = (machinery_rent_exp+fuel_total_exp+repairs_exp)/total_exp,
@@ -129,6 +132,77 @@ sc_clean <- sc_clean |>
   left_join(county_exposure_yr,     by = c("state", "county", "year"))
 
 ## merge census_clean with sc_clean for main analysis df ##
+# filter out 
+sc_county <- sc_clean |>
+  filter(!is.na(detainer_date)) |>
+  group_by(state, county) |>
+  summarise(
+    first_detainer_year = min(year(detainer_date), na.rm = TRUE),
+    exposure_pooled     = first(exposure_pooled),
+    .groups = "drop"
+  ) |>
+  mutate(treated = as.integer(first_detainer_year <= 2011))
+
+# create main file by merging on state and county. 
+main <- census_clean |>
+  left_join(sc_county, by = c("state", "county"))
+
+main_nona <- main |>
+  mutate(
+    treated         = replace_na(treated, 0L),
+    exposure_pooled = replace_na(exposure_pooled, 0),
+    post            = as.integer(year == 2012)
+  )
+
+## balance check ##
+# treated counties already had lower mechanization (higher labor reliance), nearly twice total expenditures (treated are larger), and have much higher exposure. 
+main_nona |>
+  filter(year == 2007) |>
+  group_by(treated) |>
+  summarise(
+    n              = n(),
+    mech_broad     = mean(mech_share_broad, na.rm = TRUE),
+    labor          = mean(labor_share, na.rm = TRUE),
+    total_exp      = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE)
+  )
 
 
+## analysis ##
+# model 1.1: average treatment effect (binary DiD) on mechanization share broad
+model1.1 <- feols(mech_share_broad ~ treated:post | county + year,
+                data = main_nona, vcov = ~county)
 
+# model 1.2: dose-response — how effect varies with exposure intensity on mechanization share broad
+model1.2 <- feols(mech_share_broad ~ exposure_pooled:post | county + year,
+                data = main_nona, vcov = ~county)
+
+summary(model1.1)
+summary(model1.2)
+
+# model 2.1: average treatment effect (binary DiD) on labor share
+model2.1 <- feols(labor_share ~ treated:post | county + year,
+                data = main_nona, vcov = ~county)
+
+# model 2.2: dose-response — how effect varies with exposure intensity
+model2.2 <- feols(labor_share ~ exposure_pooled:post | county + year,
+                data = main_nona, vcov = ~county)
+
+summary(model2.1)
+summary(model2.2)
+
+# pull 2007 baseline covariates and join to main_nona as time-invariant trend controls
+baseline_2007 <- main_nona |>
+  filter(year == 2007) |>
+  select(state, county, labor_share_2007 = labor_share, total_exp_2007 = total_exp)
+
+main_nona <- main_nona |>
+  left_join(baseline_2007, by = c("state", "county"))
+
+# model with baseline x post controls to absorb differential pre-existing trends
+model1_ctrl <- feols(mech_share_broad ~ treated:post +
+                       labor_share_2007:post + log(total_exp_2007):post |
+                       county + year,
+                     data = main_nona, vcov = ~county)
+
+summary(model1_ctrl)
