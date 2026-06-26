@@ -8,7 +8,9 @@ This project examines the relationship between interior immigration enforcement 
 labor_and_automation/
 ├── primary/
 │   ├── main.r                  # primary data cleaning and analysis
-│   └── agcensus_api.R          # USDA Agricultural Census API pull
+│   ├── agcensus_api.R          # USDA Agricultural Census API pull
+│   └── writing/
+│       └── main.tex            # manuscript (synced with Overleaf)
 ├── preliminary/
 │   ├── main.R                  # exploratory analysis
 │   └── metadata_extraction.py  # PDF metadata extraction
