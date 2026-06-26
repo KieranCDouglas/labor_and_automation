@@ -6,8 +6,10 @@
 #### begin ####
 ### prelude ###
 install.packages("tidyverse")
+install.packages("tidycensus")
 
 library(tidyverse)
+library(tidycensus)
 
 ### load data ###
 census <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/expenditures_all_states_wide.csv")
@@ -79,10 +81,54 @@ sc_clean <- sc |>
     entry_status = as.factor(entry_status),
     case_category = as.factor(case_category),
     apprehension_method = as.factor(apprehension_method),
-    prior_removal = as.integer(prior_removal == "YES")
+    prior_removal = as.integer(prior_removal == "YES"),
+    year   = year(coalesce(detainer_date, departed_date)),
+    county = str_remove(county, " Borough$")
   )
-
 ## 3. rates data ##
+# requires Census API key: census_api_key("YOUR_KEY", install = TRUE)
+# collects county-level population data for exposure intensity score
+county_pop <- get_decennial(
+  geography = "county",
+  variables = "P001001",
+  year      = 2010
+) |>
+  separate(NAME, into = c("county", "state_name"), sep = ", ") |>
+  mutate(
+    county = str_remove(county, " County$| Parish$| Borough$| Census Area$| city$"),
+    county = str_to_title(county),
+    state  = state.abb[match(state_name, state.name)]
+  ) |>
+  select(state, county, population = value) |>
+  group_by(state, county) |>
+  summarise(population = sum(population), .groups = "drop")
+
+# filters to period of interest
+sc_clean <- sc_clean |> filter(year < 2015)
+
+# generates pooled exposure intensity score, treating midpoint population as fixed
+county_exposure_pooled <- sc_clean |>
+  group_by(state, county) |>
+  summarise(cases = n(), .groups = "drop") |>
+  left_join(county_pop, by = c("state", "county")) |>
+  mutate(exposure_pooled = cases / population * 10000) |>
+  select(state, county, exposure_pooled)
+
+# generates seperate yearly exposure intensity scores using updated population estimates
+county_exposure_yr <- sc_clean |>
+  filter(!is.na(year)) |>
+  group_by(state, county, year) |>
+  summarise(cases = n(), .groups = "drop") |>
+  left_join(county_pop, by = c("state", "county")) |>
+  mutate(exposure_yr = cases / population * 10000) |>
+  select(state, county, year, exposure_yr)
+
+# adds pooled and yearly exposure intansity variables to sc_clean df
+sc_clean <- sc_clean |>
+  left_join(county_exposure_pooled, by = c("state", "county")) |>
+  left_join(county_exposure_yr,     by = c("state", "county", "year"))
+
+## merge census_clean with sc_clean for main analysis df ##
 
 
 
