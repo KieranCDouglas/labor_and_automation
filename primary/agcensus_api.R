@@ -89,6 +89,99 @@ pull_all_expenditures <- function(years = c(2007, 2012)) {
   map(years, pull_year) |> bind_rows()
 }
 
+# --- Crop area harvested params (all crops, county level) --------------------
+
+crops_params <- function(year, states = NULL) {
+  p <- list(
+    source_desc       = "CENSUS",
+    sector_desc       = "CROPS",
+    agg_level_desc    = "COUNTY",
+    unit_desc         = "ACRES",
+    statisticcat_desc = "AREA HARVESTED",
+    year              = as.character(year)
+  )
+  if (!is.null(states)) p$state_alpha <- paste(states, collapse = ",")
+  p
+}
+
+pull_crops_state_year <- function(state, year, delay = 1) {
+  Sys.sleep(delay)
+  raw <- nass_get(crops_params(year, state))
+  if (nrow(raw) == 0) return(NULL)
+  raw |>
+    select(state_alpha, county_name, county_ansi, state_fips_code,
+           year, sector_desc, group_desc, commodity_desc, short_desc, Value) |>
+    rename(value = Value) |>
+    mutate(
+      year  = as.integer(year),
+      value = as.numeric(gsub(",", "", value))
+    )
+}
+
+pull_crops_year <- function(year, states = ALL_STATES) {
+  message("Pulling crops ", year, " (", length(states), " states)...")
+  results <- vector("list", length(states))
+  for (i in seq_along(states)) {
+    message("  [", i, "/", length(states), "] ", states[i])
+    results[[i]] <- tryCatch(
+      pull_crops_state_year(states[i], year),
+      error = \(e) { message("    ERROR: ", conditionMessage(e)); NULL }
+    )
+  }
+  bind_rows(results)
+}
+
+pull_all_crops <- function(years = c(2007, 2012)) {
+  map(years, pull_crops_year) |> bind_rows()
+}
+
+# --- Land use params (cropland, irrigated land, etc.) ------------------------
+
+landuse_params <- function(year, states = NULL) {
+  p <- list(
+    source_desc       = "CENSUS",
+    sector_desc       = "ECONOMICS",
+    group_desc        = "FARMS & LAND & ASSETS",
+    agg_level_desc    = "COUNTY",
+    unit_desc         = "ACRES",
+    statisticcat_desc = "AREA",
+    year              = as.character(year)
+  )
+  if (!is.null(states)) p$state_alpha <- paste(states, collapse = ",")
+  p
+}
+
+pull_landuse_state_year <- function(state, year, delay = 1) {
+  Sys.sleep(delay)
+  raw <- nass_get(landuse_params(year, state))
+  if (nrow(raw) == 0) return(NULL)
+  raw |>
+    select(state_alpha, county_name, county_ansi, state_fips_code,
+           year, short_desc, Value) |>
+    rename(value = Value) |>
+    mutate(
+      year  = as.integer(year),
+      value = as.numeric(gsub(",", "", value))
+    )
+}
+
+pull_landuse_year <- function(year, states = ALL_STATES) {
+  message("Pulling land use ", year, " (", length(states), " states)...")
+  results <- vector("list", length(states))
+  for (i in seq_along(states)) {
+    message("  [", i, "/", length(states), "] ", states[i])
+    results[[i]] <- tryCatch(
+      pull_landuse_state_year(states[i], year),
+      error = \(e) { message("    ERROR: ", conditionMessage(e)); NULL }
+    )
+  }
+  bind_rows(results)
+}
+
+pull_all_landuse <- function(years = c(2007, 2012)) {
+  map(years, pull_landuse_year) |> bind_rows()
+}
+
 # --- Run ---------------------------------------------------------------------
 
 expenditures <- pull_all_expenditures()
@@ -101,7 +194,7 @@ expenditures <- expenditures |>
            .keep_all = TRUE)
 
 # Long format — one row per county × year × expense category
-write_csv(expenditures, "data/expenditures_all_states_long.csv")
+write_csv(expenditures, "data/main/expenditures_all_states_long.csv")
 message("Saved long format: ", nrow(expenditures), " rows")
 
 # Wide format — one row per county × year, columns = expense categories
@@ -112,5 +205,23 @@ exp_wide <- expenditures |>
     values_from = value
   )
 
-write_csv(exp_wide, "data/expenditures_all_states_wide.csv")
+write_csv(exp_wide, "data/main/expenditures_all_states_wide.csv")
 message("Saved wide format: ", nrow(exp_wide), " rows, ", ncol(exp_wide), " columns")
+
+# crops: all area harvested by crop type, county x year
+crops <- pull_all_crops()
+crops <- crops |>
+  arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
+  distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
+           .keep_all = TRUE)
+write_csv(crops, "data/main/crops_area_harvested.csv")
+message("Saved crops: ", nrow(crops), " rows")
+
+# land use: cropland, irrigated, etc., county x year
+landuse <- pull_all_landuse()
+landuse <- landuse |>
+  arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
+  distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
+           .keep_all = TRUE)
+write_csv(landuse, "data/main/landuse.csv")
+message("Saved land use: ", nrow(landuse), " rows")
