@@ -1,6 +1,7 @@
 ####################################################################################################
-## AgCensus expenditures data cleaning
-## Last Edited: 06/26/2026
+## main script for data cleaning and analysis
+## last edited: 06/27/2026
+## by kieran
 ####################################################################################################
 
 #### begin ####
@@ -14,7 +15,7 @@ library(tidycensus)
 library(fixest)
 
 ### load data ###
-census <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/expenditures_all_states_wide.csv")
+expenditures <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/expenditures_all_states_wide.csv")
 sc     <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/secure1904.csv")
 crops  <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/crops_area_harvested.csv")
 landuse <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/landuse.csv")
@@ -22,7 +23,7 @@ landuse <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/ma
 ### clean and merge ###
 ## 1. census data ##
 # data are renamed for clarity and consistency. necesarry variables are selected and mutations convert to workable format. new variables generated as mechanization proxies.
-census_clean <- census |> 
+expenditures_clean <- expenditures |> 
   rename(
     state = state_alpha,
     county = county_name,
@@ -89,7 +90,11 @@ sc_clean <- sc |>
     prior_removal = as.integer(prior_removal == "YES"),
     year   = year(coalesce(detainer_date, departed_date)),
     county = str_remove(county, " Borough$")
+  ) |> 
+  filter(
+    year < 2015
   )
+
 ## 3. rates data ##
 # collects county-level population data for exposure intensity score
 county_pop <- get_decennial(
@@ -107,10 +112,7 @@ county_pop <- get_decennial(
   group_by(state, county) |>
   summarise(population = sum(population), .groups = "drop")
 
-# filters to period of interest
-sc_clean <- sc_clean |> filter(year < 2015)
-
-# generates pooled exposure intensity score, treating midpoint population as fixed
+# generates pooled exposure intensity scores using 2 and 3, treating midpoint population as fixed (2010)
 county_exposure_pooled <- sc_clean |>
   group_by(state, county) |>
   summarise(cases = n(), .groups = "drop") |>
@@ -118,7 +120,7 @@ county_exposure_pooled <- sc_clean |>
   mutate(exposure_pooled = cases / population * 10000) |>
   select(state, county, exposure_pooled)
 
-# generates seperate yearly exposure intensity scores using updated population estimates
+# generates seperate yearly exposure intensity scores using 2 and 3
 county_exposure_yr <- sc_clean |>
   filter(!is.na(year)) |>
   group_by(state, county, year) |>
@@ -127,7 +129,7 @@ county_exposure_yr <- sc_clean |>
   mutate(exposure_yr = cases / population * 10000) |>
   select(state, county, year, exposure_yr)
 
-# adds pooled and yearly exposure intansity variables to sc_clean df
+# adds pooled and yearly exposure intensity variables to sc_clean df
 sc_clean <- sc_clean |>
   left_join(county_exposure_pooled, by = c("state", "county")) |>
   left_join(county_exposure_yr,     by = c("state", "county", "year"))
@@ -170,16 +172,18 @@ sc_county <- sc_clean |>
   group_by(state, county) |>
   summarise(
     first_detainer_year = min(year(detainer_date), na.rm = TRUE),
-    exposure_pooled     = first(exposure_pooled),
+    exposure_pooled     = first(exposure_pooled.x),
+    exposure_yr = first(exposure_yr.x),
     .groups = "drop"
   ) |>
-  mutate(treated = as.integer(first_detainer_year <= 2011))
+  mutate(treated = as.integer(first_detainer_year <= 2012))
 
 # create main file by merging on state and county. 
-main <- census_clean |>
+main <- expenditures_clean |>
   left_join(sc_county, by = c("state", "county"))
 
 main_nona <- main |>
+  filter(year %in% c(2007, 2012)) |>
   mutate(
     treated         = replace_na(treated, 0L),
     exposure_pooled = replace_na(exposure_pooled, 0),
@@ -208,10 +212,10 @@ main_nona |>
 baseline_2007 <- main_nona |>
   filter(year == 2007) |>
   select(state, county,
-         labor_share_2007   = labor_share,
-         total_exp_2007     = total_exp,
-         specialty_share_2007 = specialty_share,
-         irrigated_share_2007 = irrigated_share)
+   labor_share_2007   = labor_share,
+   total_exp_2007     = total_exp,
+   specialty_share_2007 = specialty_share,
+   irrigated_share_2007 = irrigated_share)
 
 # (may remove) eliminate na values from main for simplicity 
 main_nona <- main_nona |>
@@ -248,7 +252,7 @@ model_mech_share <- feols(mech_share_narrow ~ treated:post +
 
 summary(model_mech_share)
 
-## dose response models ##
+## dose response models with pooled ##
 model_labor_share_dr <- feols(labor_share ~ exposure_pooled:post +
                                 labor_share_2007:post + log(total_exp_2007):post +
                                 specialty_share_2007:post + irrigated_share_2007:post |
@@ -265,58 +269,193 @@ model_mech_share_dr <- feols(mech_share_narrow ~ exposure_pooled:post +
 
 summary(model_mech_share_dr)
 
+## dose response models with exposure timing variation ##
+# tests whether early vs. late enforcement intensity has differential effects on outcomes
+# exposure_early = avg annual detainer rate 2008-2010; exposure_late = avg annual rate 2011-2012
+# joined as county-level covariates since main_nona is only 2007/2012
+
+exposure_trajectory <- sc_clean |>
+  filter(!is.na(year), year >= 2008, year <= 2012) |>
+  left_join(county_pop, by = c("state", "county")) |>
+  filter(!is.na(population)) |>
+  group_by(state, county, year) |>
+  summarise(yr_rate = n() / first(population) * 10000, .groups = "drop") |>
+  group_by(state, county) |>
+  summarise(
+    exposure_early = mean(yr_rate[year <= 2010], na.rm = TRUE),
+    exposure_late  = mean(yr_rate[year >= 2011], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    exposure_early = ifelse(is.nan(exposure_early), 0, exposure_early),
+    exposure_late  = ifelse(is.nan(exposure_late),  0, exposure_late)
+  )
+
+main_nona <- main_nona |>
+  left_join(exposure_trajectory, by = c("state", "county")) |>
+  mutate(
+    exposure_early = replace_na(exposure_early, 0),
+    exposure_late  = replace_na(exposure_late,  0)
+  )
+
+model_labor_share_dr_yr <- feols(labor_share ~ exposure_early:post + exposure_late:post +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
+
+summary(model_labor_share_dr_yr)
+
+model_mech_share_dr_yr <- feols(mech_share_narrow ~ exposure_early:post + exposure_late:post +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year,
+  data = main_nona, vcov = ~county)
+
+summary(model_mech_share_dr_yr)
+
 ## heterogeneous treatment effects ##
 # tests whether SC effect on labor share and mech share varies by baseline county characteristics
 # three-way interactions: treated:post:baseline_var
 # treated:post coefficient = ATE at zero baseline; interaction term = how ATE changes with baseline
 
-model_labor_het <- feols(labor_share ~ treated:post +
-                           treated:post:labor_share_2007 +
-                           treated:post:irrigated_share_2007 +
-                           treated:post:specialty_share_2007 +
-                           labor_share_2007:post + log(total_exp_2007):post +
-                           specialty_share_2007:post + irrigated_share_2007:post |
-                           county + year,
-                         data = main_nona, vcov = ~county)
+# farm size heterogeneity
+# does the sc labor share effect differ between small and large farm counties 
+model_labor_het <- feols(labor_share ~ treated:post + treated:post:log(total_exp_2007) +
+ labor_share_2007:post + log(total_exp_2007):post +
+ specialty_share_2007:post + irrigated_share_2007:post |
+ county + year, data = main_nona, vcov = ~county)
 
 summary(model_labor_het)
 
-model_mech_het <- feols(mech_share_narrow ~ treated:post +
-                          treated:post:labor_share_2007 +
-                          treated:post:irrigated_share_2007 +
-                          treated:post:specialty_share_2007 +
-                          labor_share_2007:post + log(total_exp_2007):post +
-                          specialty_share_2007:post + irrigated_share_2007:post |
-                          county + year,
-                        data = main_nona, vcov = ~county)
+# labor intensity heterogeneity
+# does the sc labor share effect differ between counties with high vs. low initial labor reliance
+model_labor_het_li <- feols(labor_share ~ treated:post + treated:post:labor_share_2007 +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
 
-summary(model_mech_het)
+summary(model_labor_het_li)
 
-## heterogeneous dose-response models ##
-# tests whether the continuous exposure-response relationship varies by baseline county characteristics
+# specialty crop heterogeneity
+# does the sc labor share effect differ between specialty crop counties and field crop counties 
+model_labor_het_sp <- feols(labor_share ~ treated:post + treated:post:specialty_share_2007 +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
 
-model_labor_het_dr <- feols(labor_share ~ exposure_pooled:post +
-                              exposure_pooled:post:labor_share_2007 +
-                              exposure_pooled:post:irrigated_share_2007 +
-                              exposure_pooled:post:specialty_share_2007 +
-                              labor_share_2007:post + log(total_exp_2007):post +
-                              specialty_share_2007:post + irrigated_share_2007:post |
-                              county + year,
-                            data = main_nona, vcov = ~county)
+summary(model_labor_het_sp)
 
-summary(model_labor_het_dr)
+# irrigation heterogeneity
+# does the sc labor share effect differ between more and less irrigated counties 
+model_labor_het_irr <- feols(labor_share ~ treated:post + treated:post:irrigated_share_2007 +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
 
-model_mech_het_dr <- feols(mech_share_narrow ~ exposure_pooled:post +
-                             exposure_pooled:post:labor_share_2007 +
-                             exposure_pooled:post:irrigated_share_2007 +
-                             exposure_pooled:post:specialty_share_2007 +
-                             labor_share_2007:post + log(total_exp_2007):post +
-                             specialty_share_2007:post + irrigated_share_2007:post |
-                             county + year,
-                           data = main_nona, vcov = ~county)
+summary(model_labor_het_irr)
 
-summary(model_mech_het_dr)
+# initial mechanization heterogeneity
+# does the sc labor share effect differ for counties that were already highly mechanized in 2007
+mech_baseline <- main_nona |>
+  filter(year == 2007) |>
+  select(state, county, mech_share_narrow_2007 = mech_share_narrow)
+main_nona <- main_nona |> left_join(mech_baseline, by = c("state", "county"))
+
+model_labor_het_mech <- feols(labor_share ~ treated:post + treated:post:mech_share_narrow_2007 +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
+
+summary(model_labor_het_mech)
+
+## mech share heterogeneity models ##
+
+# farm size heterogeneity
+# does the sc mechanization effect differ between small and large farm counties - capital constraints - 
+model_mech_het_fs <- feols(mech_share_narrow ~ treated:post + treated:post:log(total_exp_2007) +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
+
+summary(model_mech_het_fs)
+
+# labor intensity heterogeneity
+# does the sc mechanization effect differ for counties more reliant on labor in 2007
+model_mech_het_li <- feols(mech_share_narrow ~ treated:post + treated:post:labor_share_2007 +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
+
+summary(model_mech_het_li)
+
+# specialty crop heterogeneity
+# does the sc mechanization effect differ between specialty crop and field crop counties
+model_mech_het_sp <- feols(mech_share_narrow ~ treated:post + treated:post:specialty_share_2007 +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
+
+summary(model_mech_het_sp)
+
+# irrigation heterogeneity
+# does the sc mechanization effect differ between more and less irrigated counties
+model_mech_het_irr <- feols(mech_share_narrow ~ treated:post + treated:post:irrigated_share_2007 +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
+
+summary(model_mech_het_irr)
+
+# initial mechanization heterogeneity
+# do counties with more room to mechanize (low baseline mech) respond more to sc
+model_mech_het_mech <- feols(mech_share_narrow ~ treated:post + treated:post:mech_share_narrow_2007 +
+  labor_share_2007:post + log(total_exp_2007):post +
+  specialty_share_2007:post + irrigated_share_2007:post |
+  county + year, data = main_nona, vcov = ~county)
+
+summary(model_mech_het_mech)
 
 # findings so far show disruption without mechanization. since mechanization plausibly happens more slowly than over a few-year period, we want to test longer run trends using 2017 agcensus.
+# by 2017 SC had been fully rolled out and suspended nationwide, so binary treated/control is no longer meaningful.
+# identification now comes from variation in enforcement intensity (exposure_pooled) across counties with similar 2007 baselines.
 
+## medium-run dose-response analysis (2007 vs 2017) ##
+main_2017 <- expenditures_clean |>
+  filter(year %in% c(2007, 2017)) |>
+  left_join(sc_county, by = c("state", "county")) |>
+  mutate(
+    exposure_pooled = replace_na(exposure_pooled, 0),
+    post            = as.integer(year == 2017)
+  ) |>
+  left_join(crop_controls,    by = c("state", "county", "year")) |>
+  left_join(landuse_controls, by = c("state", "county", "year"))
+
+baseline_2007_mr <- main_2017 |>
+  filter(year == 2007) |>
+  select(state, county,
+   labor_share_2007     = labor_share,
+   total_exp_2007       = total_exp,
+   specialty_share_2007 = specialty_share,
+   irrigated_share_2007 = irrigated_share)
+
+main_2017 <- main_2017 |>
+  left_join(baseline_2007_mr, by = c("state", "county"))
+
+# labor share: does higher enforcement intensity predict higher labor costs by 2017?
+model_labor_2017 <- feols(labor_share ~ exposure_pooled:post +
+  labor_share_2007:post + log(total_exp_2007):post +
+  irrigated_share_2007:post |
+  county + year,
+  data = main_2017, vcov = ~county)
+
+summary(model_labor_2017)
+
+# mech share: does higher enforcement intensity predict more mechanization by 2017?
+model_mech_2017 <- feols(mech_share_narrow ~ exposure_pooled:post +
+ labor_share_2007:post + log(total_exp_2007):post +
+ irrigated_share_2007:post |
+ county + year,
+ data = main_2017, vcov = ~county)
+
+summary(model_mech_2017)
 

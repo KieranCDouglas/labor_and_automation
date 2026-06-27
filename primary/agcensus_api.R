@@ -183,45 +183,37 @@ pull_all_landuse <- function(years = c(2007, 2012, 2017)) {
 }
 
 # --- Run ---------------------------------------------------------------------
+# To pull all data from scratch, uncomment and run the blocks below.
+# To load functions only (e.g. for a targeted re-pull), source this file as-is.
 
-expenditures <- pull_all_expenditures()
+# expenditures <- pull_all_expenditures()
+# expenditures <- expenditures |>
+#   arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
+#   distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
+#            .keep_all = TRUE)
+# write_csv(expenditures, "data/main/expenditures_all_states_long.csv")
+# message("Saved long format: ", nrow(expenditures), " rows")
+# exp_wide <- expenditures |>
+#   pivot_wider(
+#     id_cols     = c(state_alpha, county_name, county_ansi, state_fips_code, year),
+#     names_from  = short_desc,
+#     values_from = value
+#   )
+# write_csv(exp_wide, "data/main/expenditures_all_states_wide.csv")
+# message("Saved wide format: ", nrow(exp_wide), " rows, ", ncol(exp_wide), " columns")
 
-# Deduplicate: for conflicting rows, prefer non-NA; if both non-NA keep the larger
-# (duplicates arise because the API returns both a suppressed NA and a real value)
-expenditures <- expenditures |>
-  arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
-  distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
-           .keep_all = TRUE)
+# crops <- pull_all_crops()
+# crops <- crops |>
+#   arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
+#   distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
+#            .keep_all = TRUE)
+# write_csv(crops, "data/main/crops_area_harvested.csv")
+# message("Saved crops: ", nrow(crops), " rows")
 
-# Long format — one row per county × year × expense category
-write_csv(expenditures, "data/main/expenditures_all_states_long.csv")
-message("Saved long format: ", nrow(expenditures), " rows")
-
-# Wide format — one row per county × year, columns = expense categories
-exp_wide <- expenditures |>
-  pivot_wider(
-    id_cols     = c(state_alpha, county_name, county_ansi, state_fips_code, year),
-    names_from  = short_desc,
-    values_from = value
-  )
-
-write_csv(exp_wide, "data/main/expenditures_all_states_wide.csv")
-message("Saved wide format: ", nrow(exp_wide), " rows, ", ncol(exp_wide), " columns")
-
-# crops: all area harvested by crop type, county x year
-crops <- pull_all_crops()
-crops <- crops |>
-  arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
-  distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
-           .keep_all = TRUE)
-write_csv(crops, "data/main/crops_area_harvested.csv")
-message("Saved crops: ", nrow(crops), " rows")
-
-# land use: cropland, irrigated, etc., county x year
-landuse <- pull_all_landuse()
-landuse <- landuse |>
-  arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
-  distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
-           .keep_all = TRUE)
-write_csv(landuse, "data/main/landuse.csv")
-message("Saved land use: ", nrow(landuse), " rows")
+# landuse <- pull_all_landuse()
+# landuse <- landuse |>
+#   arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
+#   distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
+#            .keep_all = TRUE)
+# write_csv(landuse, "data/main/landuse.csv")
+# message("Saved land use: ", nrow(landuse), " rows")
