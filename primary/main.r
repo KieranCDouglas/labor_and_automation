@@ -459,4 +459,3 @@ model_mech_2017 <- feols(mech_share_narrow ~ exposure_pooled:post +
 
 summary(model_mech_2017)
 
-Hello
