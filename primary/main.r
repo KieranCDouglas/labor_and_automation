@@ -172,8 +172,8 @@ sc_county <- sc_clean |>
   group_by(state, county) |>
   summarise(
     first_detainer_year = min(year(detainer_date), na.rm = TRUE),
-    exposure_pooled     = first(exposure_pooled.x),
-    exposure_yr = first(exposure_yr.x),
+    exposure_pooled     = first(exposure_pooled),
+    exposure_yr = first(exposure_yr),
     .groups = "drop"
   ) |>
   mutate(treated = as.integer(first_detainer_year <= 2012))
@@ -459,3 +459,4 @@ model_mech_2017 <- feols(mech_share_narrow ~ exposure_pooled:post +
 
 summary(model_mech_2017)
 
+Hello
