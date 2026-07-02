@@ -1,6 +1,6 @@
 ####################################################################################################
 ## main script for data cleaning and analysis
-## last edited: 06/27/2026
+## last edited: 07/02/2026
 ## by kieran
 ####################################################################################################
 
@@ -16,10 +16,10 @@ library(fixest)
 
 ### load data ###
 expenditures <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/expenditures_all_states_wide.csv")
-sc     <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/secure1904.csv")
+sc_trac <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/secure1904.csv")
 crops  <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/crops_area_harvested.csv")
 landuse <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/landuse.csv")
-sc_activation <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/sc_activation_dates.csv")
+sc_ice <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/sc_activation_dates.csv")
 ag_typology <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/ers_county_typology_2015.csv")
 
 ### clean and merge ###
@@ -63,9 +63,9 @@ expenditures_clean <- expenditures |>
     repairs_exp = as.numeric(repairs_exp),
   )
 
-## 2. secure communities data ##
+## 2. secure communities data from TRAC ##
 # several variables are renamed for clarity and consistency. necesarry variables are selected, and mutations convert data into usable format. new variables are generated as exposure-intensity scores.
-sc_clean <- sc |> 
+sc_trac_clean <- sc_trac |>
   rename(
     sex = gender,
     age_rm = age_at_removal,
@@ -92,12 +92,9 @@ sc_clean <- sc |>
     prior_removal = as.integer(prior_removal == "YES"),
     year   = year(coalesce(detainer_date, departed_date)),
     county = str_remove(county, " Borough$")
-  ) #|> 
-  #filter(
-  #  year < 2015
-  #)
+  )
 
-## 3. rates data ##
+## 3. population rates data ##
 # collects county-level population data for exposure intensity score
 county_pop <- get_decennial(
   geography = "county",
@@ -114,31 +111,40 @@ county_pop <- get_decennial(
   group_by(state, county) |>
   summarise(population = sum(population), .groups = "drop")
 
-# generates pooled exposure intensity scores using 2 and 3, treating midpoint population as fixed (2010)
-county_exposure_pooled <- sc_clean |>
+# generates pooled exposure intensity scores using 2 and 3, treating midpoint population as fixed (2010).
+# restricted to rows attributable to SC specifically: a genuine detainer, or a CAP Local Incarceration
+# apprehension (SC's fingerprint screening still applies at local jail booking even when the match
+# never rose to a formal detainer). Excludes CAP Federal/State Incarceration (screened independent of
+# county SC activation), 287(g) (a legally distinct partnership program), and border/non-custodial/other
+# pathways that never go through local jail booking (see issues.txt).
+county_exposure_pooled <- sc_trac_clean |>
+  filter(!is.na(detainer_date) | apprehension_method == "CAP Local Incarceration") |>
   group_by(state, county) |>
   summarise(cases = n(), .groups = "drop") |>
   left_join(county_pop, by = c("state", "county")) |>
   mutate(exposure_pooled = cases / population * 10000) |>
   select(state, county, exposure_pooled)
 
-# generates seperate yearly exposure intensity scores using 2 and 3
-county_exposure_yr <- sc_clean |>
-  filter(!is.na(year)) |>
+# generates seperate yearly exposure intensity scores using 2 and 3; same SC-attributable restriction.
+# year is coalesce(detainer_date, departed_date) - detainer date preferred, departed date as a fallback
+# timing signal for cases without one. Imprecise for any single case, but still informative of which
+# counties carried more exposure over time.
+county_exposure_yr <- sc_trac_clean |>
+  filter(!is.na(year), (!is.na(detainer_date) | apprehension_method == "CAP Local Incarceration")) |>
   group_by(state, county, year) |>
   summarise(cases = n(), .groups = "drop") |>
   left_join(county_pop, by = c("state", "county")) |>
   mutate(exposure_yr = cases / population * 10000) |>
   select(state, county, year, exposure_yr)
 
-# adds pooled and yearly exposure intensity variables to sc_clean df
-sc_clean <- sc_clean |>
+# adds pooled and yearly exposure intensity variables to sc_trac_clean df
+sc_trac_clean <- sc_trac_clean |>
   left_join(county_exposure_pooled, by = c("state", "county")) |>
   left_join(county_exposure_yr,     by = c("state", "county", "year"))
 
 ## 4. crop type and land use controls ##
 # collects county-level crop type and land use data, cleans, and generates share vars
-specialty_groups <- c("VEGETABLES", "FRUIT & TREE NUTS")
+specialty_groups <- c("VEGETABLES", "FRUIT & TREE NUTS", "HORTICULTURE")
 
 crop_controls <- crops |>
   mutate(
@@ -172,7 +178,7 @@ landuse_controls <- landuse |>
 # used instead of first detainer/departure date since those are downstream (removes potential anticipatory weirdness),
 # selected-on-outcome case events (most rows lack a detainer date because they were never routed through SC at all,
 # e.g. CAP/287(g)/border encounters) rather than a measure of when SC itself went live in a county.
-sc_activation_clean <- sc_activation |>
+sc_activation_clean <- sc_ice |>
   mutate(
     county = str_remove(county, " County$| Parish$| Borough$| Census Area$| city$"),
     county = str_to_title(county),
@@ -191,7 +197,7 @@ ag_counties <- ag_typology |>
     county = str_to_title(county)
   )
 
-## 7. merge census_clean with sc_clean for main analysis df ##
+## 7. merge census_clean with sc_trac_clean for main analysis df ##
 # treated = 1 if SC had activated in the county by 2011, one full year before the 2012 ag census,
 # so post counties in 2012 aren't contaminated by activations occurring that same year.
 # early_activator/late_activator split the treated group by activation timing, built purely from the
@@ -208,32 +214,216 @@ sc_county <- sc_activation_clean |>
   ) |>
   select(state, county, first_detainer_year, exposure_pooled, treated, early_activator, late_activator)
 
-# create main file by merging on state and county, restricted to agricultural counties (USDA ERS typology).
+# create main df by merging on state and county, filtered to agricultural counties (USDA ERS typology).
+# exposure_yr joins on (state, county, year) so each census year picks up that same calendar year's SC
+# case rate specifically (not cumulative) (lets heterogeneous-intensity regressions vary exposure by
+# census wave rather than relying on the single all-years-pooled exposure_pooled figure).
 # NAs left in for now (not replaced with 0/0L) to inspect match coverage before deciding how to handle them.
-# year filter spans all three ag census years on hand (2007/2012/2017) instead of stopping at 2012;
-# post is 1 for both post-2007 census years since 2007 is the only pre-period baseline available.
+# year filter now spans all four ag census years on hand (2002/2007/2012/2017); 2002 predates SC entirely
+# (launched Oct 2008) so it's a second pre-treatment point for checking parallel trends against 2007,
+# not just a single baseline snapshot. post is 0 for both pre-treatment years (2002, 2007) and 1 for both
+# post-treatment years (2012, 2017).
 main <- expenditures_clean |>
   semi_join(ag_counties, by = c("state", "county")) |>
-  left_join(sc_county, by = c("state", "county")) |>
-  filter(year %in% c(2007, 2012, 2017)) |>
+  left_join(sc_county,          by = c("state", "county")) |>
+  left_join(county_exposure_yr, by = c("state", "county", "year")) |>
+  filter(year %in% c(2002, 2007, 2012, 2017),
+    !is.na(treated)) |>
   mutate(
-    post = as.integer(year != 2007)
+    post = as.integer(year >= 2012)
   ) |>
   left_join(crop_controls,    by = c("state", "county", "year")) |>
   left_join(landuse_controls, by = c("state", "county", "year"))
 
-### balance check ###
-# treated counties already had lower mechanization (higher labor reliance), nearly twice total expenditures (treated are larger), and have much higher exposure.
+
+### balance  and assumption checks ###
+# at baseline (2007) the counties in our would-be treatment group have slightly higher labor share of total expenditures (1.48pp dif)
+# and slightly lower total expenditures. additionally, treated group experienced much higher exposure to sc than the untreated group
+# which likely has to do with longevity of program post activation since it went offline in 2013. 
+# treated group, again, means pre 2011 rollout of sc in a given county. 
+
+## balance tables with binary treatment indicator ##
+# baseline balance table for treated versus control groups 2002
+main |>
+  filter(year == 2002) |>
+  group_by(treated) |>
+  summarise(
+    n              = n(),
+    mech     = mean(mech_share_broad, na.rm = TRUE),
+    labor          = mean(labor_share, na.rm = TRUE),
+    expenditures    = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE),
+    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+  )
+# baseline balance table for treated versus control groups 2007
 main |>
   filter(year == 2007) |>
   group_by(treated) |>
   summarise(
     n              = n(),
-    mech_broad     = mean(mech_share_broad, na.rm = TRUE),
+    mech     = mean(mech_share_broad, na.rm = TRUE),
     labor          = mean(labor_share, na.rm = TRUE),
-    total_exp      = mean(total_exp, na.rm = TRUE),
-    exposure       = mean(exposure_pooled, na.rm = TRUE)
+    expenditures    = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE),
+    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
   )
+
+# mid term balance table for treated versus control groups
+main |>
+  filter(year == 2012) |>
+  group_by(treated) |>
+  summarise(
+    n              = n(),
+    mech     = mean(mech_share_broad, na.rm = TRUE),
+    labor          = mean(labor_share, na.rm = TRUE),
+    expenditures    = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE),
+    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+  )
+
+# post-treatment balance table for treated versus control groups
+main |>
+  filter(year == 2017) |>
+  group_by(treated) |>
+  summarise(
+    n              = n(),
+    mech     = mean(mech_share_broad, na.rm = TRUE),
+    labor          = mean(labor_share, na.rm = TRUE),
+    expenditures    = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE),
+    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+  )
+
+# categorical exposure intensity tiers, for balance comparisons beyond the binary treated/control split.
+# built from exposure_pooled specifically (not exposure_yr), since exposure_pooled is time-invariant per
+# county and populated consistently across all three periods - exposure_yr has no signal at all in 2017
+# (see issues.txt), so tiers built from it would be meaningless in the post-treatment table.
+# NA/0 -> Control: these counties have zero SC-attributable cases ever recorded, a structural zero (not
+# missing data - see the exposure_pooled construction above), so it's safe to fold them into one tier
+# rather than leave them NA. Low/Medium/High are terciles computed only among counties with
+# exposure_pooled > 0, so the three nonzero bins split real variation rather than being swamped by the
+# ~58% of counties sitting at zero. Note this is a stricter "control" than treated == 0: a county that
+# activated after 2011 (so treated == 0) can still show up in Low/Medium/High if it accumulated real
+# exposure by the time of a later census wave.
+exposure_cutoffs <- main |>
+  distinct(state, county, exposure_pooled) |>
+  filter(exposure_pooled > 0) |>
+  pull(exposure_pooled) |>
+  quantile(probs = c(1/3, 2/3), na.rm = TRUE)
+
+main <- main |>
+  mutate(
+    exposure_tier = case_when(
+      is.na(exposure_pooled) | exposure_pooled == 0 ~ "Control",
+      exposure_pooled <= exposure_cutoffs[1]         ~ "Low",
+      exposure_pooled <= exposure_cutoffs[2]         ~ "Medium",
+      TRUE                                            ~ "High"
+    ),
+    exposure_tier = factor(exposure_tier, levels = c("Control", "Low", "Medium", "High"))
+  )
+
+## balance tables with categorical treatment intensity groups ##
+# baseline balance table 2002
+main |>
+  filter(year == 2002) |>
+  group_by(exposure_tier) |>
+  summarise(
+    n              = n(),
+    mech     = mean(mech_share_broad, na.rm = TRUE),
+    labor          = mean(labor_share, na.rm = TRUE),
+    expenditures    = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE),
+    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+  )
+# baseline balance table 2007
+main |>
+  filter(year == 2007) |>
+  group_by(exposure_tier) |>
+  summarise(
+    n              = n(),
+    mech     = mean(mech_share_broad, na.rm = TRUE),
+    labor          = mean(labor_share, na.rm = TRUE),
+    expenditures    = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE),
+    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+  )
+# mid term balance table
+main |>
+  filter(year == 2012) |>
+  group_by(exposure_tier) |>
+  summarise(
+    n              = n(),
+    mech     = mean(mech_share_broad, na.rm = TRUE),
+    labor          = mean(labor_share, na.rm = TRUE),
+    expenditures    = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE),
+    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+  )
+# post-treatment balance table
+main |>
+  filter(year == 2017) |>
+  group_by(exposure_tier) |>
+  summarise(
+    n              = n(),
+    mech     = mean(mech_share_broad, na.rm = TRUE),
+    labor          = mean(labor_share, na.rm = TRUE),
+    expenditures    = mean(total_exp, na.rm = TRUE),
+    exposure       = mean(exposure_pooled, na.rm = TRUE),
+    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+  )
+
+## checking par trends ##
+# labor share binary
+main |>
+  group_by(year, treated) |>
+  summarise(labor_share = mean(labor_share, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = year, y = labor_share*100, color = factor(treated))) +
+  geom_line() +
+  ylim(0, 10) +
+  theme_light()
+
+# mech share binary
+main |>
+  group_by(year, treated) |>
+  summarise(mech_share_broad = mean(mech_share_broad, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = year, y = mech_share_broad*100, color = factor(treated))) +
+  geom_line() +
+  ylim(20, 30) +
+  theme_light()
+
+# labor share by exposure tier
+main |>
+  group_by(year, exposure_tier) |>
+  summarise(labor_share = mean(labor_share, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = year, y = labor_share*100, color = factor(exposure_tier))) +
+  geom_line() +
+  ylim(4, 10) +
+  theme_light()
+
+# mech share by exposure tier
+main |>
+  group_by(year, exposure_tier) |>
+  summarise(mech_share_broad = mean(mech_share_broad, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = year, y = mech_share_broad*100, color = factor(exposure_tier))) +
+  geom_line() +
+  ylim(20,30) +
+  theme_light()
 
 
 ### analysis ###
