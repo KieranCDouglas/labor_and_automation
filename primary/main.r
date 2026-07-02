@@ -404,42 +404,52 @@ main |>
     irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
   )
 
-## checking par trends ##
+## checking pre trends ##
+FIGS_DIR <- "/Users/kieran/Documents/GitHub/labor_and_automation/figs/primary"
+
 # labor share binary
-main |>
+p_pretrend_labor_treated <- main |>
   group_by(year, treated) |>
   summarise(labor_share = mean(labor_share, na.rm = TRUE), .groups = "drop") |>
   ggplot(aes(x = year, y = labor_share*100, color = factor(treated))) +
   geom_line() +
   ylim(0, 10) +
+  labs(title = "Pre-Trends: Labor Share by Treatment Status", color = "Treated") +
   theme_light()
+ggsave(file.path(FIGS_DIR, "pretrend_labor_share_treated.png"), p_pretrend_labor_treated, width = 8, height = 6, dpi = 300)
 
 # mech share binary
-main |>
+p_pretrend_mech_treated <- main |>
   group_by(year, treated) |>
   summarise(mech_share_broad = mean(mech_share_broad, na.rm = TRUE), .groups = "drop") |>
   ggplot(aes(x = year, y = mech_share_broad*100, color = factor(treated))) +
   geom_line() +
   ylim(20, 30) +
+  labs(title = "Pre-Trends: Mechanization Share by Treatment Status", color = "Treated") +
   theme_light()
+ggsave(file.path(FIGS_DIR, "pretrend_mech_share_treated.png"), p_pretrend_mech_treated, width = 8, height = 6, dpi = 300)
 
 # labor share by exposure tier
-main |>
+p_pretrend_labor_tier <- main |>
   group_by(year, exposure_tier) |>
   summarise(labor_share = mean(labor_share, na.rm = TRUE), .groups = "drop") |>
   ggplot(aes(x = year, y = labor_share*100, color = factor(exposure_tier))) +
   geom_line() +
   ylim(4, 10) +
+  labs(title = "Pre-Trends: Labor Share by Exposure Intensity Tier", color = "Exposure Tier") +
   theme_light()
+ggsave(file.path(FIGS_DIR, "pretrend_labor_share_exposure_tier.png"), p_pretrend_labor_tier, width = 8, height = 6, dpi = 300)
 
 # mech share by exposure tier
-main |>
+p_pretrend_mech_tier <- main |>
   group_by(year, exposure_tier) |>
   summarise(mech_share_broad = mean(mech_share_broad, na.rm = TRUE), .groups = "drop") |>
   ggplot(aes(x = year, y = mech_share_broad*100, color = factor(exposure_tier))) +
   geom_line() +
   ylim(20,30) +
+  labs(title = "Pre-Trends: Mechanization Share by Exposure Intensity Tier", color = "Exposure Tier") +
   theme_light()
+ggsave(file.path(FIGS_DIR, "pretrend_mech_share_exposure_tier.png"), p_pretrend_mech_tier, width = 8, height = 6, dpi = 300)
 
 
 ### analysis ###
@@ -475,7 +485,6 @@ main <- main |>
 # labor_share_2007, log(total_exp_2007), specialty_share_2007, and irrigated_share_2007 are all interacted with year_f as pre-treatment baseline controls
 # interaction with year_f lets each baseline characteristic being controlled for have a different relationship with the outcome each year.
 # | county + year fixed effects absorb time-invariant characteristics, allowing the primary coefficient to be identified from within-county variation
-# 
 
 model_labor_share_dr_es <- feols(labor_share ~ exposure_pooled:year_f +
  labor_share_2007:year_f + log(total_exp_2007):year_f +
@@ -533,116 +542,3 @@ model_mech_nofuel_dr_pooled <- feols(mech_share_nofuel ~ exposure_pooled:post +
  data = main, vcov = ~county)
 
 summary(model_mech_nofuel_dr_pooled)
-
-## PRIMARY: exposure_tier event-study companion (nonparametric robustness check) ##
-# tests whether the linear-in-dose relationship above is masking a nonlinear/threshold shape (e.g. only
-# "High" exposure counties actually respond) - a functional-form robustness check subordinate to the
-# continuous model above, not a third co-equal primary result. exposure_tier's "Control" category is
-# stricter than treated == 0 (a county activated after 2011 can still land in Low/Medium/High if it
-# accumulated real exposure by a later census wave - see the exposure_tier construction above), so don't
-# conflate the two.
-
-model_labor_share_tier_es <- feols(labor_share ~ exposure_tier:year_f +
-                                labor_share_2007:year_f + log(total_exp_2007):year_f +
-                                specialty_share_2007:year_f + irrigated_share_2007:year_f |
-                                county + year,
-                              data = main, vcov = ~county)
-
-summary(model_labor_share_tier_es)
-
-model_mech_share_tier_es <- feols(mech_share_narrow ~ exposure_tier:year_f +
-                               labor_share_2007:year_f + log(total_exp_2007):year_f +
-                               specialty_share_2007:year_f + irrigated_share_2007:year_f |
-                               county + year,
-                             data = main, vcov = ~county)
-
-summary(model_mech_share_tier_es)
-
-## PRIMARY: heterogeneous dose-response effects ##
-# tests whether the exposure-intensity effect on labor share and mech share varies by baseline county
-# characteristics, using the same year_f granularity as the primary models above for both the main
-# effect and the interaction (rather than mixing a coarse post-based interaction with a fine-grained
-# main model)
-
-# farm size heterogeneity
-model_labor_het_fs_es <- feols(labor_share ~ exposure_pooled:year_f + exposure_pooled:year_f:log(total_exp_2007) +
- labor_share_2007:year_f + log(total_exp_2007):year_f +
- specialty_share_2007:year_f + irrigated_share_2007:year_f |
- county + year, data = main, vcov = ~county)
-
-summary(model_labor_het_fs_es)
-
-# labor intensity heterogeneity
-model_labor_het_li_es <- feols(labor_share ~ exposure_pooled:year_f + exposure_pooled:year_f:labor_share_2007 +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_labor_het_li_es)
-
-# specialty crop heterogeneity
-model_labor_het_sp_es <- feols(labor_share ~ exposure_pooled:year_f + exposure_pooled:year_f:specialty_share_2007 +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_labor_het_sp_es)
-
-# irrigation heterogeneity
-model_labor_het_irr_es <- feols(labor_share ~ exposure_pooled:year_f + exposure_pooled:year_f:irrigated_share_2007 +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_labor_het_irr_es)
-
-# initial mechanization heterogeneity
-# (mech_share_narrow_2007 already in main via baseline_2007 above)
-model_labor_het_mech_es <- feols(labor_share ~ exposure_pooled:year_f + exposure_pooled:year_f:mech_share_narrow_2007 +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_labor_het_mech_es)
-
-## PRIMARY: mech share heterogeneity models ##
-
-# farm size heterogeneity
-model_mech_het_fs_es <- feols(mech_share_narrow ~ exposure_pooled:year_f + exposure_pooled:year_f:log(total_exp_2007) +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_mech_het_fs_es)
-
-# labor intensity heterogeneity
-model_mech_het_li_es <- feols(mech_share_narrow ~ exposure_pooled:year_f + exposure_pooled:year_f:labor_share_2007 +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_mech_het_li_es)
-
-# specialty crop heterogeneity
-model_mech_het_sp_es <- feols(mech_share_narrow ~ exposure_pooled:year_f + exposure_pooled:year_f:specialty_share_2007 +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_mech_het_sp_es)
-
-# irrigation heterogeneity
-model_mech_het_irr_es <- feols(mech_share_narrow ~ exposure_pooled:year_f + exposure_pooled:year_f:irrigated_share_2007 +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_mech_het_irr_es)
-
-# initial mechanization heterogeneity
-model_mech_het_mech_es <- feols(mech_share_narrow ~ exposure_pooled:year_f + exposure_pooled:year_f:mech_share_narrow_2007 +
-  labor_share_2007:year_f + log(total_exp_2007):year_f +
-  specialty_share_2007:year_f + irrigated_share_2007:year_f |
-  county + year, data = main, vcov = ~county)
-
-summary(model_mech_het_mech_es)
