@@ -19,6 +19,8 @@ expenditures <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/da
 sc     <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/secure1904.csv")
 crops  <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/crops_area_harvested.csv")
 landuse <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/landuse.csv")
+sc_activation <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/sc_activation_dates.csv")
+ag_typology <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/ers_county_typology_2015.csv")
 
 ### clean and merge ###
 ## 1. census data ##
@@ -90,10 +92,10 @@ sc_clean <- sc |>
     prior_removal = as.integer(prior_removal == "YES"),
     year   = year(coalesce(detainer_date, departed_date)),
     county = str_remove(county, " Borough$")
-  ) |> 
-  filter(
-    year < 2015
-  )
+  ) #|> 
+  #filter(
+  #  year < 2015
+  #)
 
 ## 3. rates data ##
 # collects county-level population data for exposure intensity score
@@ -165,36 +167,64 @@ landuse_controls <- landuse |>
   ) |>
   mutate(irrigated_share = irrigated_acres / total_ag_acres)
 
-## 5. merge census_clean with sc_clean for main analysis df ##
-# add treated indicator variable and filter for counties with a detainer date 
-sc_county <- sc_clean |>
-  filter(!is.na(detainer_date)) |>
-  group_by(state, county) |>
-  summarise(
-    first_detainer_year = min(year(detainer_date), na.rm = TRUE),
-    exposure_pooled     = first(exposure_pooled),
-    exposure_yr = first(exposure_yr),
-    .groups = "drop"
-  ) |>
-  mutate(treated = as.integer(first_detainer_year <= 2012))
-
-# create main file by merging on state and county. 
-main <- expenditures_clean |>
-  left_join(sc_county, by = c("state", "county"))
-
-main_nona <- main |>
-  filter(year %in% c(2007, 2012)) |>
+## 5. secure communities activation dates ##
+# ICE's official county-level SC activation roster (FOIA'd "IDENT/IAFIS Interoperability" report),
+# used instead of first detainer/departure date since those are downstream (removes potential anticipatory weirdness),
+# selected-on-outcome case events (most rows lack a detainer date because they were never routed through SC at all,
+# e.g. CAP/287(g)/border encounters) rather than a measure of when SC itself went live in a county.
+sc_activation_clean <- sc_activation |>
   mutate(
-    treated         = replace_na(treated, 0L),
-    exposure_pooled = replace_na(exposure_pooled, 0),
-    post            = as.integer(year == 2012)
+    county = str_remove(county, " County$| Parish$| Borough$| Census Area$| city$"),
+    county = str_to_title(county),
+    activation_date = as.Date(activation_date),
+    first_detainer_year = year(activation_date)
+  )
+
+## 6. USDA ERS county typology ##
+# provides indicator for farming-dependent counties (2015 edition) to restrict the analysis sample to agricultural counties
+# defined as those in which ≥20% of labor earnings or ≥17% of # of jobs come from ag (16% of countiees total, conservative estimate)
+ag_counties <- ag_typology |>
+  filter(Farming_2015_Update == 1) |>
+  transmute(
+    state  = State,
+    county = str_remove(County_name, " County$| Parish$| Borough$| Census Area$| city$"),
+    county = str_to_title(county)
+  )
+
+## 7. merge census_clean with sc_clean for main analysis df ##
+# treated = 1 if SC had activated in the county by 2011, one full year before the 2012 ag census,
+# so post counties in 2012 aren't contaminated by activations occurring that same year.
+# early_activator/late_activator split the treated group by activation timing, built purely from the
+# activation roster rather than case-level dates - same reason we moved treated off detainer/departure
+# dates: case dates are downstream/selected, and for the ~85% of rows without a detainer_date, dated by
+# departed_date instead, which lags the true encounter and isn't SC-specific to begin with.
+# early_activator = activated 2008-2010; late_activator = activated in 2011, the last pre-cutoff year.
+sc_county <- sc_activation_clean |>
+  left_join(county_exposure_pooled, by = c("state", "county")) |>
+  mutate(
+    treated         = as.integer(first_detainer_year <= 2011),
+    early_activator = as.integer(first_detainer_year <= 2010),
+    late_activator  = as.integer(first_detainer_year == 2011)
+  ) |>
+  select(state, county, first_detainer_year, exposure_pooled, treated, early_activator, late_activator)
+
+# create main file by merging on state and county, restricted to agricultural counties (USDA ERS typology).
+# NAs left in for now (not replaced with 0/0L) to inspect match coverage before deciding how to handle them.
+# year filter spans all three ag census years on hand (2007/2012/2017) instead of stopping at 2012;
+# post is 1 for both post-2007 census years since 2007 is the only pre-period baseline available.
+main <- expenditures_clean |>
+  semi_join(ag_counties, by = c("state", "county")) |>
+  left_join(sc_county, by = c("state", "county")) |>
+  filter(year %in% c(2007, 2012, 2017)) |>
+  mutate(
+    post = as.integer(year != 2007)
   ) |>
   left_join(crop_controls,    by = c("state", "county", "year")) |>
   left_join(landuse_controls, by = c("state", "county", "year"))
 
 ### balance check ###
-# treated counties already had lower mechanization (higher labor reliance), nearly twice total expenditures (treated are larger), and have much higher exposure. 
-main_nona |>
+# treated counties already had lower mechanization (higher labor reliance), nearly twice total expenditures (treated are larger), and have much higher exposure.
+main |>
   filter(year == 2007) |>
   group_by(treated) |>
   summarise(
@@ -208,8 +238,8 @@ main_nona |>
 
 ### analysis ###
 ## prep ##
-# pull 2007 baseline covariates and join to main_nona as time-invariant trend controls
-baseline_2007 <- main_nona |>
+# pull 2007 baseline covariates and join to main as time-invariant trend controls
+baseline_2007 <- main |>
   filter(year == 2007) |>
   select(state, county,
    labor_share_2007   = labor_share,
@@ -217,8 +247,8 @@ baseline_2007 <- main_nona |>
    specialty_share_2007 = specialty_share,
    irrigated_share_2007 = irrigated_share)
 
-# (may remove) eliminate na values from main for simplicity 
-main_nona <- main_nona |>
+# (may remove) eliminate na values from main for simplicity
+main <- main |>
   left_join(baseline_2007, by = c("state", "county"))
 
 ## binary treatment models ##
@@ -239,7 +269,7 @@ model_labor_share <- feols(labor_share ~ treated:post +
                        labor_share_2007:post + log(total_exp_2007):post +
                        specialty_share_2007:post + irrigated_share_2007:post |
                        county + year,
-                     data = main_nona, vcov = ~county)
+                     data = main, vcov = ~county)
 
 summary(model_labor_share)
 
@@ -248,7 +278,7 @@ model_mech_share <- feols(mech_share_narrow ~ treated:post +
                        labor_share_2007:post + log(total_exp_2007):post +
                        specialty_share_2007:post + irrigated_share_2007:post |
                        county + year,
-                     data = main_nona, vcov = ~county)
+                     data = main, vcov = ~county)
 
 summary(model_mech_share)
 
@@ -257,7 +287,7 @@ model_labor_share_dr <- feols(labor_share ~ exposure_pooled:post +
                                 labor_share_2007:post + log(total_exp_2007):post +
                                 specialty_share_2007:post + irrigated_share_2007:post |
                                 county + year,
-                              data = main_nona, vcov = ~county)
+                              data = main, vcov = ~county)
 
 summary(model_labor_share_dr)
 
@@ -265,51 +295,26 @@ model_mech_share_dr <- feols(mech_share_narrow ~ exposure_pooled:post +
                                labor_share_2007:post + log(total_exp_2007):post +
                                specialty_share_2007:post + irrigated_share_2007:post |
                                county + year,
-                             data = main_nona, vcov = ~county)
+                             data = main, vcov = ~county)
 
 summary(model_mech_share_dr)
 
-## dose response models with exposure timing variation ##
-# tests whether early vs. late enforcement intensity has differential effects on outcomes
-# exposure_early = avg annual detainer rate 2008-2010; exposure_late = avg annual rate 2011-2012
-# joined as county-level covariates since main_nona is only 2007/2012
+## dose response models with activation timing variation ##
+# tests whether counties activated earlier (2008-2010) respond differently than those activated
+# later (2011, the last pre-cutoff year) - early_activator/late_activator built in section 7
 
-exposure_trajectory <- sc_clean |>
-  filter(!is.na(year), year >= 2008, year <= 2012) |>
-  left_join(county_pop, by = c("state", "county")) |>
-  filter(!is.na(population)) |>
-  group_by(state, county, year) |>
-  summarise(yr_rate = n() / first(population) * 10000, .groups = "drop") |>
-  group_by(state, county) |>
-  summarise(
-    exposure_early = mean(yr_rate[year <= 2010], na.rm = TRUE),
-    exposure_late  = mean(yr_rate[year >= 2011], na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  mutate(
-    exposure_early = ifelse(is.nan(exposure_early), 0, exposure_early),
-    exposure_late  = ifelse(is.nan(exposure_late),  0, exposure_late)
-  )
-
-main_nona <- main_nona |>
-  left_join(exposure_trajectory, by = c("state", "county")) |>
-  mutate(
-    exposure_early = replace_na(exposure_early, 0),
-    exposure_late  = replace_na(exposure_late,  0)
-  )
-
-model_labor_share_dr_yr <- feols(labor_share ~ exposure_early:post + exposure_late:post +
+model_labor_share_dr_yr <- feols(labor_share ~ early_activator:post + late_activator:post +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_labor_share_dr_yr)
 
-model_mech_share_dr_yr <- feols(mech_share_narrow ~ exposure_early:post + exposure_late:post +
+model_mech_share_dr_yr <- feols(mech_share_narrow ~ early_activator:post + late_activator:post +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
   county + year,
-  data = main_nona, vcov = ~county)
+  data = main, vcov = ~county)
 
 summary(model_mech_share_dr_yr)
 
@@ -323,7 +328,7 @@ summary(model_mech_share_dr_yr)
 model_labor_het <- feols(labor_share ~ treated:post + treated:post:log(total_exp_2007) +
  labor_share_2007:post + log(total_exp_2007):post +
  specialty_share_2007:post + irrigated_share_2007:post |
- county + year, data = main_nona, vcov = ~county)
+ county + year, data = main, vcov = ~county)
 
 summary(model_labor_het)
 
@@ -332,7 +337,7 @@ summary(model_labor_het)
 model_labor_het_li <- feols(labor_share ~ treated:post + treated:post:labor_share_2007 +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_labor_het_li)
 
@@ -341,7 +346,7 @@ summary(model_labor_het_li)
 model_labor_het_sp <- feols(labor_share ~ treated:post + treated:post:specialty_share_2007 +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_labor_het_sp)
 
@@ -350,21 +355,21 @@ summary(model_labor_het_sp)
 model_labor_het_irr <- feols(labor_share ~ treated:post + treated:post:irrigated_share_2007 +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_labor_het_irr)
 
 # initial mechanization heterogeneity
 # does the sc labor share effect differ for counties that were already highly mechanized in 2007
-mech_baseline <- main_nona |>
+mech_baseline <- main |>
   filter(year == 2007) |>
   select(state, county, mech_share_narrow_2007 = mech_share_narrow)
-main_nona <- main_nona |> left_join(mech_baseline, by = c("state", "county"))
+main <- main |> left_join(mech_baseline, by = c("state", "county"))
 
 model_labor_het_mech <- feols(labor_share ~ treated:post + treated:post:mech_share_narrow_2007 +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_labor_het_mech)
 
@@ -375,7 +380,7 @@ summary(model_labor_het_mech)
 model_mech_het_fs <- feols(mech_share_narrow ~ treated:post + treated:post:log(total_exp_2007) +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_mech_het_fs)
 
@@ -384,7 +389,7 @@ summary(model_mech_het_fs)
 model_mech_het_li <- feols(mech_share_narrow ~ treated:post + treated:post:labor_share_2007 +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_mech_het_li)
 
@@ -393,7 +398,7 @@ summary(model_mech_het_li)
 model_mech_het_sp <- feols(mech_share_narrow ~ treated:post + treated:post:specialty_share_2007 +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_mech_het_sp)
 
@@ -402,7 +407,7 @@ summary(model_mech_het_sp)
 model_mech_het_irr <- feols(mech_share_narrow ~ treated:post + treated:post:irrigated_share_2007 +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_mech_het_irr)
 
@@ -411,7 +416,7 @@ summary(model_mech_het_irr)
 model_mech_het_mech <- feols(mech_share_narrow ~ treated:post + treated:post:mech_share_narrow_2007 +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year, data = main_nona, vcov = ~county)
+  county + year, data = main, vcov = ~county)
 
 summary(model_mech_het_mech)
 

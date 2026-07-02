@@ -1,0 +1,35 @@
+ISSUES TO POSSIBLY REVISIT
+============================================================
+
+1. exposure_pooled / exposure_yr count all ICE case activity, not just SC detainers
+------------------------------------------------------------
+Where: main.r, county_exposure_pooled and county_exposure_yr (built from sc_clean)
+
+What's happening:
+- Both variables are cases / population * 10000, where "cases" = every row in
+  sc_clean (secure1904.csv) for a county, regardless of whether that row has a
+  detainer_date.
+- Only some rows are genuine SC detainers. The rest come through other pathways
+  (CAP, 287(g), border patrol, non-custodial arrest, etc.) that have nothing to
+  do with Secure Communities specifically - same issue we fixed for the
+  treated/first_detainer_year variable earlier, just not yet applied here.
+- So exposure_pooled/exposure_yr currently measure "rate of any ICE case
+  activity" per county, not "rate of SC detainers" per county.
+
+Concrete numbers (checked 2026-07):
+- 2,723 counties have at least one case row of any kind (current exposure_pooled
+  universe).
+- Only 1,746 of those counties have at least one row with a non-missing
+  detainer_date (true SC detainer).
+- Restricting to detainer-only rows would drop 977 counties (about 36% of the
+  current universe) to zero/NA exposure.
+- Among the 1,746 counties that do have at least one detainer, detainer rows are
+  typically a small share of all case rows for that county (median 15%, mean
+  19%) - so a detainer-only measure would also run roughly 5x lower almost
+  everywhere it's still nonzero.
+
+Decision (as of now): leaving exposure_pooled/exposure_yr as-is (all case types),
+since restricting to detainer-only rows would meaningfully shrink both the county
+coverage and the magnitude of the exposure signal. Revisit if reviewers push on
+whether "exposure" should mean SC detainers specifically, or if it's worth
+reporting both versions side by side.
