@@ -76,15 +76,49 @@ for (yr in 2008:2013) {
 ## Secure Communities Rollout Maps: Agricultural Counties
 ####################################################################################################
 
-### load USDA ERS County Typology Codes (2015 edition) and flag farming-dependent counties ###
-ag_counties <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/ers_county_typology_2015.csv") |>
+### define agricultural counties: union of (a) USDA ERS County Typology Codes (2015 edition)
+### farming-dependent flag and (b) farmland acreage share >= 20% of county land area as of 2002
+### (pre-SC baseline). (a) alone misses acreage-dominant-but-economically-diversified counties like the
+### CA Central Valley (Fresno, Kern, Tulare, Merced, Stanislaus, San Joaquin...), where ag's absolute
+### footprint is large but is dwarfed in dollar/job terms by other industries - see primary/main.r for
+### the full construction and rationale.
+landuse <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/landuse.csv")
+ag_typology <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/ers_county_typology_2015.csv")
+
+ers_ag_flag <- ag_typology |>
   filter(Farming_2015_Update == 1) |>
   transmute(
     state  = State,
     county = str_remove(County_name, " County$| Parish$| Borough$| Census Area$| city$"),
-    county = str_to_title(county),
-    ag_county = TRUE
+    county = str_to_title(county)
   )
+
+# farmland_share NA (not 0) when AG LAND - ACRES is unreported/suppressed for a county in 2002, so
+# disclosure-suppressed counties aren't misclassified as having no farmland.
+farmland_share_2002 <- landuse |>
+  filter(year == 2002) |>
+  mutate(
+    county = str_to_title(str_remove(county_name, " County$| Parish$| Borough$| Census Area$| city$")),
+    state  = state_alpha
+  ) |>
+  group_by(state, county) |>
+  summarise(
+    total_ag_acres  = if (all(is.na(value[short_desc == "AG LAND - ACRES"]))) NA_real_
+                       else sum(value[short_desc == "AG LAND - ACRES"], na.rm = TRUE),
+    land_area_acres = if (all(is.na(value[short_desc == "LAND AREA, INCL NON-AG - ACRES"]))) NA_real_
+                       else sum(value[short_desc == "LAND AREA, INCL NON-AG - ACRES"], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(farmland_share_2002 = total_ag_acres / land_area_acres) |>
+  select(state, county, farmland_share_2002)
+
+acreage_ag_flag <- farmland_share_2002 |>
+  filter(farmland_share_2002 >= 0.20) |>
+  select(state, county)
+
+ag_counties <- bind_rows(ers_ag_flag, acreage_ag_flag) |>
+  distinct(state, county) |>
+  mutate(ag_county = TRUE)
 
 ### join ag-county flag onto the rollout data and generate one map per year ###
 counties_rollout_ag <- counties_rollout |>

@@ -198,16 +198,48 @@ sc_activation_clean <- sc_ice |>
     first_detainer_year = year(activation_date)
   )
 
-## 6. USDA ERS county typology ##
-# provides indicator for farming-dependent counties (2015 edition) to restrict the analysis sample to agricultural counties
-# defined as those in which ≥20% of labor earnings or ≥17% of # of jobs come from ag (16% of countiees total, conservative estimate)
-ag_counties <- ag_typology |>
+## 6. USDA ERS county typology + farmland acreage share ##
+# provides indicator for farming-dependent counties (2015 edition) to restrict the analysis sample to
+# agricultural counties, defined as the union of two criteria:
+#   (a) ERS earnings/employment flag: ≥20% of labor earnings or ≥17% of jobs from ag
+#   (b) farmland acreage share: ≥20% of county land area in farms as of 2002 (pre-SC baseline,
+#       avoids the classification being contaminated by any treatment effect on farmland acreage)
+# (a) alone misses acreage-dominant-but-economically-diversified counties like the CA Central Valley
+# (Fresno, Kern, Tulare, Merced, Stanislaus, San Joaquin...) where ag's absolute footprint is large but
+# is dwarfed in dollar/job terms by other industries, so it never crosses the earnings/employment bar.
+ers_ag_flag <- ag_typology |>
   filter(Farming_2015_Update == 1) |>
   transmute(
     state  = State,
     county = str_remove(County_name, " County$| Parish$| Borough$| Census Area$| city$"),
     county = str_to_title(county)
   )
+
+# farmland_share NA (not 0) when AG LAND - ACRES is unreported/suppressed for a county in 2002, so
+# disclosure-suppressed counties aren't misclassified as having no farmland.
+farmland_share_2002 <- landuse |>
+  filter(year == 2002) |>
+  mutate(
+    county = str_to_title(str_remove(county_name, " County$| Parish$| Borough$| Census Area$| city$")),
+    state  = state_alpha
+  ) |>
+  group_by(state, county) |>
+  summarise(
+    total_ag_acres  = if (all(is.na(value[short_desc == "AG LAND - ACRES"]))) NA_real_
+                       else sum(value[short_desc == "AG LAND - ACRES"], na.rm = TRUE),
+    land_area_acres = if (all(is.na(value[short_desc == "LAND AREA, INCL NON-AG - ACRES"]))) NA_real_
+                       else sum(value[short_desc == "LAND AREA, INCL NON-AG - ACRES"], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(farmland_share_2002 = total_ag_acres / land_area_acres) |>
+  select(state, county, farmland_share_2002)
+
+acreage_ag_flag <- farmland_share_2002 |>
+  filter(farmland_share_2002 >= 0.20) |>
+  select(state, county)
+
+ag_counties <- bind_rows(ers_ag_flag, acreage_ag_flag) |>
+  distinct(state, county)
 
 ## 7. merge census_clean with sc_trac_clean for main analysis df ##
 # treated = 1 if SC had activated in the county by 2011, one full year before the 2012 ag census,
@@ -348,6 +380,7 @@ main <- main |>
 
 ## balance tables with categorical treatment intensity groups ##
 # baseline balance table 2002
+# shows what we would expect: higher exposure = higher labor at baseline
 main |>
   filter(year == 2002) |>
   group_by(exposure_tier) |>
@@ -362,6 +395,7 @@ main |>
     irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
   )
 # baseline balance table 2007
+# higher exposure tiers have lower baseline mechanization and higher labor share
 main |>
   filter(year == 2007) |>
   group_by(exposure_tier) |>
@@ -390,6 +424,7 @@ main |>
     irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
   )
 # post-treatment balance table
+# mech share increases most for those high exposure counties
 main |>
   filter(year == 2017) |>
   group_by(exposure_tier) |>
@@ -413,7 +448,7 @@ p_pretrend_labor_treated <- main |>
   summarise(labor_share = mean(labor_share, na.rm = TRUE), .groups = "drop") |>
   ggplot(aes(x = year, y = labor_share*100, color = factor(treated))) +
   geom_line() +
-  ylim(0, 10) +
+  ylim(0, 20) +
   labs(title = "Pre-Trends: Labor Share by Treatment Status", color = "Treated") +
   theme_light()
 ggsave(file.path(FIGS_DIR, "pretrend_labor_share_treated.png"), p_pretrend_labor_treated, width = 8, height = 6, dpi = 300)
@@ -435,7 +470,7 @@ p_pretrend_labor_tier <- main |>
   summarise(labor_share = mean(labor_share, na.rm = TRUE), .groups = "drop") |>
   ggplot(aes(x = year, y = labor_share*100, color = factor(exposure_tier))) +
   geom_line() +
-  ylim(4, 10) +
+  ylim(4, 20) +
   labs(title = "Pre-Trends: Labor Share by Exposure Intensity Tier", color = "Exposure Tier") +
   theme_light()
 ggsave(file.path(FIGS_DIR, "pretrend_labor_share_exposure_tier.png"), p_pretrend_labor_tier, width = 8, height = 6, dpi = 300)
@@ -446,7 +481,7 @@ p_pretrend_mech_tier <- main |>
   summarise(mech_share_broad = mean(mech_share_broad, na.rm = TRUE), .groups = "drop") |>
   ggplot(aes(x = year, y = mech_share_broad*100, color = factor(exposure_tier))) +
   geom_line() +
-  ylim(20,30) +
+  ylim(20,35) +
   labs(title = "Pre-Trends: Mechanization Share by Exposure Intensity Tier", color = "Exposure Tier") +
   theme_light()
 ggsave(file.path(FIGS_DIR, "pretrend_mech_share_exposure_tier.png"), p_pretrend_mech_tier, width = 8, height = 6, dpi = 300)
@@ -479,17 +514,19 @@ main <- main |>
 ## models: exposure-intensity dose-response  ##
 ####################################################################################################
 # all four models test whether a county's sc exposure intensity (exposure_pooled being attributable cases per 10,000 residents from 2008-1013) 
-# predicts labor and mechanization spending. I use a panel of 502 agricultural counties observed in 2002, 2007, 2012, and 2017.
+# predicts labor and mechanization spending. I use a panel of 803 agricultural counties observed in 2002, 2007, 2012, and 2017.
 # the _es pair (event study) provides 4 seperate yearly estimates while the _pooled pair collapses that into one before/after number
 # exposure_pooled:year_f is the primary regressor, where exposure dose response relationship has different sloped across all 4 periods.
 # labor_share_2007, log(total_exp_2007), specialty_share_2007, and irrigated_share_2007 are all interacted with year_f as pre-treatment baseline controls
 # interaction with year_f lets each baseline characteristic being controlled for have a different relationship with the outcome each year.
-# | county + year fixed effects absorb time-invariant characteristics, allowing the primary coefficient to be identified from within-county variation
-
+# | county + year fixed effects absorb time-invariant characteristics, allowing the primary coefficient to be identified from within-county variation.
+# the _es pair below additionally uses state^year in place of year, absorbing state-specific time shocks
+# (e.g. state-level ag policy, weather, enforcement climate) that plain year FE would leave in the error term;
+# the pooled/nofuel companions further down keep plain year FE for now.
 model_labor_share_dr_es <- feols(labor_share ~ exposure_pooled:year_f +
  labor_share_2007:year_f + log(total_exp_2007):year_f +
  specialty_share_2007:year_f + irrigated_share_2007:year_f |
- county + year,
+ county + state^year,
   data = main, vcov = ~county)
 
 summary(model_labor_share_dr_es)
@@ -498,7 +535,7 @@ model_mech_share_dr_es <- feols(mech_share_narrow ~ exposure_pooled:year_f +
  mech_share_narrow_2007:year_f +
  labor_share_2007:year_f + log(total_exp_2007):year_f +
  specialty_share_2007:year_f + irrigated_share_2007:year_f |
- county + year,
+ county + state^year,
  data = main, vcov = ~county)
 
 summary(model_mech_share_dr_es)
@@ -507,7 +544,7 @@ summary(model_mech_share_dr_es)
 model_labor_share_dr_pooled <- feols(labor_share ~ exposure_pooled:post +
   labor_share_2007:post + log(total_exp_2007):post +
   specialty_share_2007:post + irrigated_share_2007:post |
-  county + year,
+  county + year + state^year,
   data = main, vcov = ~county)
 
 summary(model_labor_share_dr_pooled)
@@ -516,7 +553,7 @@ model_mech_share_dr_pooled <- feols(mech_share_narrow ~ exposure_pooled:post +
  mech_share_narrow_2007:post +
  labor_share_2007:post + log(total_exp_2007):post +
  specialty_share_2007:post + irrigated_share_2007:post |
- county + year,
+ county + year + state^year,
  data = main, vcov = ~county)
 
 summary(model_mech_share_dr_pooled)
@@ -542,3 +579,65 @@ model_mech_nofuel_dr_pooled <- feols(mech_share_nofuel ~ exposure_pooled:post +
  data = main, vcov = ~county)
 
 summary(model_mech_nofuel_dr_pooled)
+
+####################################################################################################
+## extreme-groups check: top quartile vs bottom quartile exposure intensity, mechanization outcomes ##
+####################################################################################################
+# sharpens the exposure contrast by comparing only the two tails of the exposure_pooled distribution
+# (>=P75 vs <=P25, both computed across all 803 counties) and dropping the ambiguous middle 50%, rather
+# than using the full continuous dose-response or the tercile-based exposure_tier split above.
+# P25 across the full distribution is 0 (49% of counties never had an SC-attributable case 2008-2013), so
+# "Low" here is exactly the zero-exposure group; "High" is the top quartile (>=3.53 cases per 10,000).
+exposure_extreme_cutoffs <- main |>
+  distinct(state, county, exposure_pooled) |>
+  pull(exposure_pooled) |>
+  quantile(probs = c(0.25, 0.75), na.rm = TRUE)
+
+main <- main |>
+  mutate(
+    exposure_extreme = case_when(
+      exposure_pooled <= exposure_extreme_cutoffs[1] ~ "Low",
+      exposure_pooled >= exposure_extreme_cutoffs[2] ~ "High",
+      TRUE                                            ~ NA_character_
+    ),
+    exposure_extreme = factor(exposure_extreme, levels = c("Low", "High")),
+    high_exposure     = as.integer(exposure_extreme == "High")
+  )
+
+## 1. descriptive check: mean mech_share_narrow by group and year ##
+main |>
+  filter(!is.na(exposure_extreme)) |>
+  group_by(year, exposure_extreme) |>
+  summarise(n = n(), mech_share_narrow = mean(mech_share_narrow, na.rm = TRUE), .groups = "drop") |>
+  arrange(year, exposure_extreme) |>
+  print(n = Inf)
+
+## 2. regression check: same event-study structure as model_mech_share_dr_es, but high_exposure:year_f
+## (binary High vs Low, middle 50% dropped) replaces the continuous exposure_pooled:year_f regressor.
+## uses 2002 baseline controls, and - critically - year == 2002 itself is EXCLUDED from the modeled
+## sample here (not just used as the baseline source): mech_share_narrow_2002 IS mech_share_narrow when
+## year == 2002 by construction (same tautology problem the 2007-baseline _es models had for their own
+## year - whichever year supplies the baseline covariates can't also be modeled as an outcome year without
+## trivially "predicting itself"). This leaves 2007 (pre-treatment) vs 2012/2017 (post) as the three
+## genuinely-testable waves for this model specifically.
+baseline_2002 <- main |>
+  filter(year == 2002) |>
+  select(state, county,
+   labor_share_2002       = labor_share,
+   mech_share_narrow_2002 = mech_share_narrow,
+   total_exp_2002         = total_exp,
+   specialty_share_2002   = specialty_share,
+   irrigated_share_2002   = irrigated_share)
+
+main <- main |>
+  left_join(baseline_2002, by = c("state", "county"))
+
+model_mech_extreme_es <- feols(mech_share_narrow ~ high_exposure:year_f +
+ mech_share_narrow_2002:year_f +
+ labor_share_2002:year_f + log(total_exp_2002):year_f +
+ specialty_share_2002:year_f + irrigated_share_2002:year_f |
+ county + state^year,
+ data = main |> filter(!is.na(exposure_extreme), year != 2002) |> mutate(year_f = droplevels(year_f)),
+ vcov = ~county)
+
+summary(model_mech_extreme_es)
