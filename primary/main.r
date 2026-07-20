@@ -21,6 +21,10 @@ crops  <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/mai
 landuse <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/landuse.csv")
 sc_ice <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/sc_activation_dates.csv")
 ag_typology <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/ers_county_typology_2015.csv")
+hired_labor <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/hired_labor.csv")
+farms_landvalue <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/farms_landvalue.csv")
+harvested_by_farmsize <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/harvested_cropland_by_farmsize.csv")
+
 
 ### clean and merge ###
 ## 1. census data ##
@@ -118,16 +122,12 @@ county_pop <- get_decennial(
   group_by(state, county) |>
   summarise(population = sum(population), .groups = "drop")
 
-# generates pooled exposure intensity scores using 2 and 3, treating midpoint population as fixed (2010).
+# generate pooled exposure intensity scores using 2 and 3, treating midpoint population as fixed (2010).
 # restricted to rows attributable to SC specifically: a genuine detainer, or a CAP Local Incarceration
 # apprehension (SC's fingerprint screening still applies at local jail booking even when the match
 # never rose to a formal detainer). Excludes CAP Federal/State Incarceration (screened independent of
 # county SC activation), 287(g) (a legally distinct partnership program), and border/non-custodial/other
-# pathways that never go through local jail booking (see issues.txt). Also bounded to 2008-2013, the true
-# SC operational window (launched Oct 2008, effectively wound down by 2013) - drops the ~17.3% of
-# otherwise-qualifying cases that fall in 2014-2015, so exposure_pooled represents dose received during
-# the actual rollout specifically, letting 2017 outcomes be read as a genuine post-treatment long-run
-# measurement rather than a period where dose is still partly accruing.
+# pathways that never go through local jail booking (see issues.txt).
 county_exposure_pooled <- sc_trac_clean |>
   filter(year >= 2008, year <= 2013,
          !is.na(detainer_date) | apprehension_method == "CAP Local Incarceration") |>
@@ -137,10 +137,7 @@ county_exposure_pooled <- sc_trac_clean |>
   mutate(exposure_pooled = cases / population * 10000) |>
   select(state, county, exposure_pooled)
 
-# generates seperate yearly exposure intensity scores using 2 and 3; same SC-attributable restriction.
-# year is coalesce(detainer_date, departed_date) - detainer date preferred, departed date as a fallback
-# timing signal for cases without one. Imprecise for any single case, but still informative of which
-# counties carried more exposure over time.
+# generate seperate yearly exposure intensity scores using 2 and 3; same SC-attributable restriction.
 county_exposure_yr <- sc_trac_clean |>
   filter(!is.na(year), (!is.na(detainer_date) | apprehension_method == "CAP Local Incarceration")) |>
   group_by(state, county, year) |>
@@ -186,10 +183,7 @@ landuse_controls <- landuse |>
   mutate(irrigated_share = irrigated_acres / total_ag_acres)
 
 ## 5. secure communities activation dates ##
-# ICE's official county-level SC activation roster (FOIA'd "IDENT/IAFIS Interoperability" report),
-# used instead of first detainer/departure date since those are downstream (removes potential anticipatory weirdness),
-# selected-on-outcome case events (most rows lack a detainer date because they were never routed through SC at all,
-# e.g. CAP/287(g)/border encounters) rather than a measure of when SC itself went live in a county.
+# ICE's official county-level SC activation roster
 sc_activation_clean <- sc_ice |>
   mutate(
     county = str_remove(county, " County$| Parish$| Borough$| Census Area$| city$"),
@@ -198,9 +192,8 @@ sc_activation_clean <- sc_ice |>
     first_detainer_year = year(activation_date)
   )
 
-## 6. USDA ERS county typology + farmland acreage share ##
-# provides indicator for farming-dependent counties (2015 edition) to restrict the analysis sample to
-# agricultural counties, defined as the union of two criteria:
+## 6. define ag counties ##
+# provides indicator for agricultural counties, defined as the union of two criteria:
 #   (a) ERS earnings/employment flag: ≥20% of labor earnings or ≥17% of jobs from ag
 #   (b) farmland acreage share: ≥20% of county land area in farms as of 2002 (pre-SC baseline,
 #       avoids the classification being contaminated by any treatment effect on farmland acreage)
@@ -241,7 +234,47 @@ acreage_ag_flag <- farmland_share_2002 |>
 ag_counties <- bind_rows(ers_ag_flag, acreage_ag_flag) |>
   distinct(state, county)
 
-## 7. merge census_clean with sc_trac_clean for main analysis df ##
+## 7. outcome varaibles ##
+# cleans hired farm labor data, giving each concept its own column per county-year. 
+safe_sum <- function(value, cond) {
+  if (all(is.na(value[cond]))) NA_real_ else sum(value[cond], na.rm = TRUE)
+}
+
+hired_labor_controls <- hired_labor |>
+  mutate(
+    county = str_to_title(str_remove(county_name, " County$| Parish$| Borough$| Census Area$| city$")),
+    state  = state_alpha
+  ) |>
+  group_by(state, county, year) |>
+  summarise(
+    hired_workers          = safe_sum(value, short_desc == "LABOR, HIRED - NUMBER OF WORKERS"),
+    hired_labor_exp        = safe_sum(value, short_desc == "LABOR, HIRED - EXPENSE, MEASURED IN $"),
+    migrant_workers        = safe_sum(value, short_desc == "LABOR, MIGRANT - NUMBER OF WORKERS"),
+    migrant_farms_hired    = safe_sum(value, short_desc == "LABOR, MIGRANT - OPERATIONS WITH WORKERS" &
+                                         domaincat_desc == "LABOR: (INCL HIRED WORKERS)"),
+    migrant_farms_contract = safe_sum(value, short_desc == "LABOR, MIGRANT - OPERATIONS WITH WORKERS" &
+                                         domaincat_desc == "LABOR: (ONLY CONTRACT)"),
+    .groups = "drop"
+  ) |>
+  mutate(migrant_farms = migrant_farms_hired + migrant_farms_contract)
+
+# cleans farm count and land/building asset value, needed here for total_farms
+# denominator for migrant_farm_share below (migrant_farms is a count of farms, so it's normalized as a
+# share of all farms, not per acre).
+farms_landvalue_controls <- farms_landvalue |>
+  mutate(
+    county = str_to_title(str_remove(county_name, " County$| Parish$| Borough$| Census Area$| city$")),
+    state  = state_alpha
+  ) |>
+  group_by(state, county, year) |>
+  summarise(
+    total_farms      = safe_sum(value, short_desc == "FARM OPERATIONS - NUMBER OF OPERATIONS"),
+    land_asset_value = safe_sum(value, short_desc == "AG LAND, INCL BUILDINGS - ASSET VALUE, MEASURED IN $"),
+    .groups = "drop"
+  )
+
+
+## 8. merge census_clean with sc_trac_clean for main analysis df ##
 # treated = 1 if SC had activated in the county by 2011, one full year before the 2012 ag census,
 # so post counties in 2012 aren't contaminated by activations occurring that same year.
 # early_activator/late_activator split the treated group by activation timing, built purely from the
@@ -258,12 +291,11 @@ sc_county <- sc_activation_clean |>
   ) |>
   select(state, county, first_detainer_year, exposure_pooled, treated, early_activator, late_activator)
 
-# create main df by merging on state and county, filtered to agricultural counties (USDA ERS typology).
+# create main df by merging on state and county, filtered to agricultural counties.
 # exposure_yr joins on (state, county, year) so each census year picks up that same calendar year's SC
-# case rate specifically (not cumulative) (lets heterogeneous-intensity regressions vary exposure by
-# census wave rather than relying on the single all-years-pooled exposure_pooled figure).
-# year filter now spans all four ag census years on hand (2002/2007/2012/2017); 2002 predates SC entirely
-# (launched Oct 2008) so it's a second pre-treatment point for checking parallel trends against 2007,
+# case rate specifically.
+# year filter spans all four ag census years on hand (2002/2007/2012/2017); 2002 predates SC entirely
+# so it's a second pre-treatment point for checking parallel trends against 2007,
 # not just a single baseline snapshot. post is 0 for both pre-treatment years (2002, 2007) and 1 for both
 # post-treatment years (2012, 2017).
 main <- expenditures_clean |>
@@ -280,8 +312,25 @@ main <- expenditures_clean |>
     # covariates below, whose NAs mean "USDA didn't report this county-year" (genuinely unknown, not zero).
     exposure_pooled = replace_na(exposure_pooled, 0)
   ) |>
-  left_join(crop_controls,    by = c("state", "county", "year")) |>
-  left_join(landuse_controls, by = c("state", "county", "year"))
+  left_join(crop_controls,            by = c("state", "county", "year")) |>
+  left_join(landuse_controls,         by = c("state", "county", "year")) |>
+  left_join(hired_labor_controls,     by = c("state", "county", "year")) |>
+  left_join(farms_landvalue_controls, by = c("state", "county", "year")) |>
+  # labor-reliance measures, proxying mechanization from the labor side: harvested_acres (not
+  # total_ag_acres) is the denominator for the per-acre measures since hired labor is tied to actively-
+  # cropped land, not pasture. migrant_farms is a farm count, not a worker count, so it's
+  # normalized as a share of all farms (migrant_farm_share) rather than per acre.
+  # harvested_acres/total_farms == 0 -> NA before dividing: landuse_controls/farms_landvalue_controls
+  # don't distinguish "0 reported" from "unreported/suppressed" the way hired_labor_controls' safe_sum
+  # does, so a 0 denominator here is a data gap.
+  mutate(
+    harvested_acres_safe     = na_if(harvested_acres, 0),
+    total_farms_safe         = na_if(total_farms, 0),
+    hired_workers_per_acre   = hired_workers    / harvested_acres_safe,
+    hired_labor_exp_per_acre = hired_labor_exp  / harvested_acres_safe,
+    migrant_farm_share       = migrant_farms    / total_farms_safe
+  ) |>
+  select(-harvested_acres_safe, -total_farms_safe)
 
 
 ### balance  and assumption checks ###
@@ -301,9 +350,11 @@ main |>
     labor          = mean(labor_share, na.rm = TRUE),
     expenditures    = mean(total_exp, na.rm = TRUE),
     exposure       = mean(exposure_pooled, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
+    specialty_share = mean(specialty_share, na.rm = TRUE),
     total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
+    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
+    mig_share = mean(migrant_farm_share, na.rm = TRUE)
   )
 # baseline balance table for treated versus control groups 2007
 main |>
@@ -317,7 +368,9 @@ main |>
     exposure       = mean(exposure_pooled, na.rm = TRUE),
     specialty_share = mean(specialty_share, na.rm = TRUE)*100,
     total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
+    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
+    mig_share = mean(migrant_farm_share, na.rm = TRUE)
   )
 
 # mid term balance table for treated versus control groups
@@ -332,7 +385,9 @@ main |>
     exposure       = mean(exposure_pooled, na.rm = TRUE),
     specialty_share = mean(specialty_share, na.rm = TRUE)*100,
     total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
+    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
+    mig_share = mean(migrant_farm_share, na.rm = TRUE)
   )
 
 # post-treatment balance table for treated versus control groups
@@ -347,7 +402,9 @@ main |>
     exposure       = mean(exposure_pooled, na.rm = TRUE),
     specialty_share = mean(specialty_share, na.rm = TRUE)*100,
     total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
+    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
+    mig_share = mean(migrant_farm_share, na.rm = TRUE)
   )
 
 # categorical exposure intensity tiers, for balance comparisons beyond the binary treated/control split.
@@ -392,7 +449,9 @@ main |>
     exposure       = mean(exposure_pooled, na.rm = TRUE),
     specialty_share = mean(specialty_share, na.rm = TRUE)*100,
     total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
+    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
+    mig_share = mean(migrant_farm_share, na.rm = TRUE)
   )
 # baseline balance table 2007
 # higher exposure tiers have lower baseline mechanization and higher labor share
@@ -407,7 +466,9 @@ main |>
     exposure       = mean(exposure_pooled, na.rm = TRUE),
     specialty_share = mean(specialty_share, na.rm = TRUE)*100,
     total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
+    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
+    mig_share = mean(migrant_farm_share, na.rm = TRUE)
   )
 # mid term balance table
 main |>
@@ -421,7 +482,9 @@ main |>
     exposure       = mean(exposure_pooled, na.rm = TRUE),
     specialty_share = mean(specialty_share, na.rm = TRUE)*100,
     total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
+    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
+    mig_share = mean(migrant_farm_share, na.rm = TRUE)
   )
 # post-treatment balance table
 # mech share increases most for those high exposure counties
@@ -436,7 +499,9 @@ main |>
     exposure       = mean(exposure_pooled, na.rm = TRUE),
     specialty_share = mean(specialty_share, na.rm = TRUE)*100,
     total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE)
+    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
+    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
+    mig_share = mean(migrant_farm_share, na.rm = TRUE)
   )
 
 ## checking pre trends ##
@@ -464,27 +529,27 @@ p_pretrend_mech_treated <- main |>
   theme_light()
 ggsave(file.path(FIGS_DIR, "pretrend_mech_share_treated.png"), p_pretrend_mech_treated, width = 8, height = 6, dpi = 300)
 
-# labor share by exposure tier
-p_pretrend_labor_tier <- main |>
+# hired workers per acre by exposure tier
+p_pretrend_workers_acre_tier <- main |>
   group_by(year, exposure_tier) |>
-  summarise(labor_share = mean(labor_share, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = year, y = labor_share*100, color = factor(exposure_tier))) +
+  summarise(hired_workers_per_acre = median(hired_workers_per_acre, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = year, y = hired_workers_per_acre, color = factor(exposure_tier))) +
   geom_line() +
-  ylim(4, 20) +
-  labs(title = "Pre-Trends: Labor Share by Exposure Intensity Tier", color = "Exposure Tier") +
+  ylim(0, 0.02) +
+  labs(title = "Pre-Trends: Hired Workers Per Acre by Exposure Intensity Tier", color = "Exposure Tier") +
   theme_light()
-ggsave(file.path(FIGS_DIR, "pretrend_labor_share_exposure_tier.png"), p_pretrend_labor_tier, width = 8, height = 6, dpi = 300)
+ggsave(file.path(FIGS_DIR, "p_pretrend_workers_acre_tier.png"), p_pretrend_workers_acre_tier, width = 8, height = 6, dpi = 300)
 
-# mech share by exposure tier
-p_pretrend_mech_tier <- main |>
+# migrant farm share by exposure tier
+p_pretrend_migrant_share_tier <- main |>
   group_by(year, exposure_tier) |>
-  summarise(mech_share_broad = mean(mech_share_broad, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = year, y = mech_share_broad*100, color = factor(exposure_tier))) +
+  summarise(migrant_farm_share = median(migrant_farm_share, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = year, y = migrant_farm_share, color = factor(exposure_tier))) +
   geom_line() +
-  ylim(20,35) +
-  labs(title = "Pre-Trends: Mechanization Share by Exposure Intensity Tier", color = "Exposure Tier") +
+  ylim(0, 0.15) +
+  labs(title = "Pre-Trends: Migrant-Farm Share by Exposure Intensity Tier", color = "Exposure Tier") +
   theme_light()
-ggsave(file.path(FIGS_DIR, "pretrend_mech_share_exposure_tier.png"), p_pretrend_mech_tier, width = 8, height = 6, dpi = 300)
+ggsave(file.path(FIGS_DIR, "p_pretrend_migrant_share_tier.png"), p_pretrend_migrant_share_tier, width = 8, height = 6, dpi = 300)
 
 
 ### analysis ###
@@ -641,3 +706,32 @@ model_mech_extreme_es <- feols(mech_share_narrow ~ high_exposure:year_f +
  vcov = ~county)
 
 summary(model_mech_extreme_es)
+
+####################################################################################################
+## model: hired-workers-per-acre dose-response (labor-reliance primary outcome) ##
+####################################################################################################
+# same event-study structure as model_labor_share_dr_es/model_mech_share_dr_es, but with
+# hired_workers_per_acre as the outcome, compared against its 2007 pre-program baseline specifically
+# (not 2002) - 2012/2017 are the active/post-program years being tested against that 2007 reference.
+# year == 2007 itself is excluded from the modeled sample: hired_workers_per_acre_2007 IS
+# hired_workers_per_acre when year==2007 by construction, so including that row would make the model
+# trivially "predict itself" for 2007 (the same tautology the original 2007-baseline labor/mech models
+# had). labor_share_2007/total_exp_2007/specialty_share_2007/irrigated_share_2007 are already joined into
+# main via baseline_2007 above - only hired_workers_per_acre_2007 is new here.
+hired_workers_baseline_2007 <- main |>
+  filter(year == 2007) |>
+  select(state, county, hired_workers_per_acre_2007 = hired_workers_per_acre)
+
+main <- main |>
+  left_join(hired_workers_baseline_2007, by = c("state", "county"))
+
+model_workers_acre_dr_es <- feols(hired_workers_per_acre ~ exposure_pooled:year_f +
+ hired_workers_per_acre_2007:year_f +
+ labor_share_2007:year_f + log(total_exp_2007):year_f +
+ specialty_share_2007:year_f + irrigated_share_2007:year_f |
+ county + state^year,
+ data = main |> filter(year %in% c(2012, 2017)) |> mutate(year_f = droplevels(year_f)),
+ vcov = ~county)
+
+summary(model_workers_acre_dr_es)
+
