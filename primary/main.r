@@ -1,6 +1,6 @@
 ####################################################################################################
 ## main script for data cleaning and analysis
-## last edited: 07/02/2026
+## last edited: 07/25/2026
 ## by kieran
 ####################################################################################################
 
@@ -591,57 +591,70 @@ p_pretrend_migrant_share_tier <- main |>
   theme_light()
 ggsave(file.path(FIGS_DIR, "p_pretrend_migrant_share_tier.png"), p_pretrend_migrant_share_tier, width = 8, height = 6, dpi = 300)
 
+## secure communities-related exposure intensity over time ##
+# state, county, year (2008-2017) panel of SC-attributable detainers per 10,000 population 
+# SC-attributable restriction as county_exposure_pooled/county_exposure_yr above (a genuine detainer, or a
+# CAP Local Incarceration apprehension, since SC's fingerprint screening still applies at local jail
+# booking even when the match never rose to a formal detainer). 
+sc_detainer_rate_yearly <- county_pop |>
+  distinct(state, county, population) |>
+  semi_join(ag_counties, by = c("state", "county")) |>
+  cross_join(tibble(year = 2008:2017)) |>
+  left_join(
+    sc_trac_clean |>
+      filter(year >= 2008, year <= 2017,
+             !is.na(detainer_date) | apprehension_method == "CAP Local Incarceration") |>
+      group_by(state, county, year) |>
+      summarise(cases = n(), .groups = "drop"),
+    by = c("state", "county", "year")
+  ) |>
+  mutate(
+    cases = replace_na(cases, 0),
+    detainer_rate = cases / population * 10000
+  ) |>
+  select(state, county, year, detainer_rate)
+
+# lets visualize this
+sc_detainer_rate_filtered <- sc_detainer_rate_yearly |>
+  group_by(state, county) |>
+  filter(sum(detainer_rate > 0) >= 2) |>
+  ungroup()
+
+worker_quartiles <- main |>
+  filter(year == 2007) |>
+  distinct(state, county, hired_workers_per_acre)
+worker_cutoffs <- quantile(worker_quartiles$hired_workers_per_acre, probs = c(.25, .5, .75), na.rm = TRUE)
+worker_quartiles <- worker_quartiles |>
+  mutate(worker_quartile = case_when(
+    is.na(hired_workers_per_acre)         ~ NA_character_,
+    hired_workers_per_acre <= worker_cutoffs[1] ~ "Q1 (lowest)",
+    hired_workers_per_acre <= worker_cutoffs[2] ~ "Q2",
+    hired_workers_per_acre <= worker_cutoffs[3] ~ "Q3",
+    TRUE                                         ~ "Q4 (highest)"
+  )) |>
+  select(state, county, worker_quartile)
+
+detainer_plot_data <- sc_detainer_rate_filtered |>
+  left_join(worker_quartiles, by = c("state", "county")) |>
+  filter(!is.na(worker_quartile))
+
+county_gradient_palette <- colorRampPalette(c("#7CA982", "#E0EEC6", "#f4a259", "#243E36", "#bc4b51"))(
+  n_distinct(detainer_plot_data$state)
+)
+
+# create figure
+het_dose_fig <- ggplot(
+  data = detainer_plot_data,
+  aes(x = year, y = detainer_rate, color = state, group = interaction(state, county))) +
+  geom_smooth(method = loess, weight = .5, linewidth = 0.4, se = FALSE) +
+  facet_wrap(~worker_quartile) +
+  scale_color_manual(values = county_gradient_palette) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  labs(title = "SC Detainer Rate Over Time Per County (By Hired-Worker-Per-Acre Quartile)",
+      y = "Detainers Issued Per 10,000 Population", x = "Year") +
+  ylim(0,18)
+ggsave(file.path(FIGS_DIR, "het_dose_fig.png"), het_dose_fig,
+       width = 10, height = 7, dpi = 300)
 
 ### analysis ###
-## prep ##
-# pull 2007 baseline covariates and join to main as time-invariant trend controls
-baseline_2007 <- main |>
-  filter(year == 2007) |>
-  select(state, county,
-   labor_share_2007   = labor_share,
-   mech_share_broad_2007 = mech_share_broad,
-   mech_share_narrow_2007 = mech_share_narrow,
-   mech_share_nofuel_2007 = mech_share_nofuel,
-   total_exp_2007     = total_exp,
-   specialty_share_2007 = specialty_share,
-   irrigated_share_2007 = irrigated_share,
-  hired_labor_exp_per_acre_2007 = hired_labor_exp_per_acre,
-migrant_farm_share_2007 = migrant_farm_share,
-hired_workers_per_acre_2007 = hired_workers_per_acre)
-
-# (may remove) eliminate na values from main for simplicity
-main <- main |>
-  left_join(baseline_2007, by = c("state", "county"))
-
-# year_f: year as a factor, used to interact exposure_pooled/exposure_tier/baseline controls with each
-# census wave individually below.
-main <- main |>
-  mutate(year_f = factor(year))
-
-####################################################################################################
-## models: exposure-intensity dose-response  ##
-####################################################################################################
-model_labor_share_dr_es <- feols(labor_share ~ exposure_pooled:year_f +
- labor_share_2007:year_f + log(total_exp_2007):year_f +
- specialty_share_2007:year_f + irrigated_share_2007:year_f |
- county + state^year,
-  data = main, vcov = ~county)
-
-summary(model_labor_share_dr_es)
-
-testmod <-  feols(migrant_farm_share ~ exposure_pooled:year_f +
-  foreign_born_share_2009:year_f + migrant_farm_share_2007:year_f|
-  county + state^year,
-data = main |> filter(year != 2007) |> mutate(year_f = droplevels(year_f)), vcov = ~county)
-summary(testmod)
-
-
-model_workers_acre_dr_es <- feols(hired_workers_per_acre ~ exposure_pooled:year_f +
-  foreign_born_share_2009:year_f + hired_workers_per_acre_2007:year_f |
-  county + state^year,
-  data = main |> filter(year != 2007) |> mutate(year_f = droplevels(year_f)), vcov = ~county)
-summary(model_workers_acre_dr_es)
-
-
-
-
