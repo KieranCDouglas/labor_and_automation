@@ -1,21 +1,31 @@
 ####################################################################################################
 ## main script for data cleaning and analysis
-## last edited: 07/25/2026
+## last edited: 08/01/2026
 ## by kieran
 ####################################################################################################
 
+####################################################################################################
 #### begin ####
+####################################################################################################
+
+####################################################################################################
 ### prelude ###
+####################################################################################################
+
 install.packages("tidyverse")
 install.packages("tidycensus")
 install.packages("fixest")
+install.packages("broom")
 
 library(tidyverse)
 library(tidycensus)
 library(fixest)
+library(broom)
 
-
+####################################################################################################
 ### load data ###
+####################################################################################################
+
 expenditures <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/expenditures_all_states_wide.csv")
 sc_trac <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/secure1904.csv")
 crops  <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/crops_area_harvested.csv")
@@ -26,9 +36,11 @@ hired_labor <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/dat
 farms_landvalue <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/farms_landvalue.csv")
 harvested_by_farmsize <- read.csv("/Users/kieran/Documents/GitHub/labor_and_automation/data/main/harvested_cropland_by_farmsize.csv")
 
-
+####################################################################################################
 ### clean and merge ###
-## 1. census data ##
+####################################################################################################
+
+## 1. census data ##--------------------------------------------------------------------------------
 # data are renamed for clarity and consistency. necesarry variables are selected and mutations convert to workable format. new variables generated as mechanization proxies.
 expenditures_clean <- expenditures |> 
   rename(
@@ -75,7 +87,7 @@ expenditures_clean <- expenditures |>
     repairs_exp = as.numeric(repairs_exp),
   )
 
-## 2. secure communities data from TRAC ##
+## 2. secure communities data from TRAC ##----------------------------------------------------------
 # several variables are renamed for clarity and consistency. necesarry variables are selected, and mutations convert data into usable format. new variables are generated as exposure-intensity scores.
 sc_trac_clean <- sc_trac |>
   rename(
@@ -106,7 +118,7 @@ sc_trac_clean <- sc_trac |>
     county = str_remove(county, " Borough$")
   )
 
-## 3. population rates data ##
+## 3. population rates data ##----------------------------------------------------------------------
 # collects county-level population data for exposure intensity score
 county_pop <- get_decennial(
   geography = "county",
@@ -125,10 +137,7 @@ county_pop <- get_decennial(
 
 # baseline (pre-SC) foreign-born population share, used as a control for the confound where exposure_pooled
 # is mechanically higher in counties with a larger existing immigrant population (more people who can be
-# flagged once SC's fingerprint-sharing exists), independent of any actual enforcement effect - see
-# discussion in issues.txt-style notes on migrant_farm_share's dose-response models. 2005-2009 ACS 5-year
-# estimates (year=2009, the earliest 5-year vintage tidycensus supports) predates SC's Oct 2008 launch
-# almost entirely, giving a genuinely pre-treatment baseline like the ag-census baseline covariates.
+# flagged once SC's fingerprint-sharing exists)
 county_foreign_born <- get_acs(
   geography = "county",
   variables = c(total_pop = "B05002_001", foreign_born = "B05002_013"),
@@ -142,9 +151,6 @@ county_foreign_born <- get_acs(
     state  = state.abb[match(state_name, state.name)]
   ) |>
   select(state, county, variable, estimate) |>
-  # sum before pivoting: independent cities sharing a cleaned name with an adjacent county (Baltimore
-  # City/County, St. Louis City/County, several VA independent cities) collapse to the same (state,
-  # county) after the suffix-stripping above - same collision county_pop already handles the same way.
   group_by(state, county, variable) |>
   summarise(estimate = sum(estimate, na.rm = TRUE), .groups = "drop") |>
   pivot_wider(names_from = variable, values_from = estimate) |>
@@ -180,7 +186,7 @@ sc_trac_clean <- sc_trac_clean |>
   left_join(county_exposure_pooled, by = c("state", "county")) |>
   left_join(county_exposure_yr,     by = c("state", "county", "year"))
 
-## 4. crop type and land use controls ##
+## 4. crop type and land use controls ##------------------------------------------------------------
 # collects county-level crop type and land use data, cleans, and generates share vars
 specialty_groups <- c("VEGETABLES", "FRUIT & TREE NUTS", "HORTICULTURE")
 
@@ -211,7 +217,7 @@ landuse_controls <- landuse |>
   ) |>
   mutate(irrigated_share = irrigated_acres / total_ag_acres)
 
-## 5. secure communities activation dates ##
+## 5. secure communities activation dates ##--------------------------------------------------------
 # ICE's official county-level SC activation roster
 sc_activation_clean <- sc_ice |>
   mutate(
@@ -221,14 +227,10 @@ sc_activation_clean <- sc_ice |>
     first_detainer_year = year(activation_date)
   )
 
-## 6. define ag counties ##
+## 6. define ag counties ##-------------------------------------------------------------------------
 # provides indicator for agricultural counties, defined as the union of two criteria:
 #   (a) ERS earnings/employment flag: ≥20% of labor earnings or ≥17% of jobs from ag
-#   (b) farmland acreage share: ≥20% of county land area in farms as of 2002 (pre-SC baseline,
-#       avoids the classification being contaminated by any treatment effect on farmland acreage)
-# (a) alone misses acreage-dominant-but-economically-diversified counties like the CA Central Valley
-# (Fresno, Kern, Tulare, Merced, Stanislaus, San Joaquin...) where ag's absolute footprint is large but
-# is dwarfed in dollar/job terms by other industries, so it never crosses the earnings/employment bar.
+#   (b) farmland acreage share: ≥20% of county land area in farms as of 2002 (pre-SC baseline)
 ers_ag_flag <- ag_typology |>
   filter(Farming_2015_Update == 1) |>
   transmute(
@@ -237,7 +239,7 @@ ers_ag_flag <- ag_typology |>
     county = str_to_title(county)
   )
 
-# farmland_share NA (not 0) when AG LAND - ACRES is unreported/suppressed for a county in 2002, so
+# farmland_share NA (not 0) when AG LAND ACRES is missing for a county in 2002, so
 # disclosure-suppressed counties aren't misclassified as having no farmland.
 farmland_share_2002 <- landuse |>
   filter(year == 2002) |>
@@ -263,7 +265,7 @@ acreage_ag_flag <- farmland_share_2002 |>
 ag_counties <- bind_rows(ers_ag_flag, acreage_ag_flag) |>
   distinct(state, county)
 
-## 7. outcome varaibles ##
+## 7. outcome varaibles ##---------------------------------------------------------------------------
 # cleans hired farm labor data, giving each concept its own column per county-year. 
 safe_sum <- function(value, cond) {
   if (all(is.na(value[cond]))) NA_real_ else sum(value[cond], na.rm = TRUE)
@@ -287,7 +289,7 @@ hired_labor_controls <- hired_labor |>
   ) |>
   mutate(migrant_farms = migrant_farms_hired + migrant_farms_contract)
 
-# cleans farm count and land/building asset value, needed here for total_farms
+# cleans farm count and asset value, needed here for total_farms
 # denominator for migrant_farm_share below (migrant_farms is a count of farms, so it's normalized as a
 # share of all farms, not per acre).
 farms_landvalue_controls <- farms_landvalue |>
@@ -303,14 +305,7 @@ farms_landvalue_controls <- farms_landvalue |>
   )
 
 
-## 8. merge census_clean with sc_trac_clean for main analysis df ##
-# treated = 1 if SC had activated in the county by 2011, one full year before the 2012 ag census,
-# so post counties in 2012 aren't contaminated by activations occurring that same year.
-# early_activator/late_activator split the treated group by activation timing, built purely from the
-# activation roster rather than case-level dates - same reason we moved treated off detainer/departure
-# dates: case dates are downstream/selected, and for the ~85% of rows without a detainer_date, dated by
-# departed_date instead, which lags the true encounter and isn't SC-specific to begin with.
-# early_activator = activated 2008-2010; late_activator = activated in 2011, the last pre-cutoff year.
+## 8. merge for main analysis df ##------------------------------------------------------------------
 sc_county <- sc_activation_clean |>
   left_join(county_exposure_pooled, by = c("state", "county")) |>
   mutate(
@@ -324,14 +319,7 @@ sc_county <- sc_activation_clean |>
 # exposure_yr joins on (state, county, year) so each census year picks up that same calendar year's SC
 # case rate specifically.
 # year filter keeps all four ag census years (2002/2007/2012/2017); 2002 predates SC entirely so it's a
-# second pre-treatment point for checking parallel trends against 2007, not just a single baseline
-# snapshot. post is 0 for both pre-treatment years (2002, 2007), 1 for 2017 (fully post-treatment, well
-# after SC wound down), and NA for 2012 - SC rollout was still actively ongoing in many counties around
-# the 2012 census, so it's neither clean pre- nor post-treatment; leaving it NA (rather than 0, which
-# would misclassify a contaminated period as untreated) means it stays in main for anything that doesn't
-# key off post (balance tables, the year_f-based event-study models, etc.), while any :post interaction
-# automatically drops those rows (NA propagates through the interaction, same as feols already does for
-# other missing covariates) - explicit filter(!is.na(post)) added below anyway for clarity.
+# second pre-treatment point for checking parallel trends against 2007.
 main <- expenditures_clean |>
   semi_join(ag_counties, by = c("state", "county")) |>
   left_join(sc_county,          by = c("state", "county")) |>
@@ -371,177 +359,12 @@ main <- expenditures_clean |>
   ) |>
   select(-harvested_acres_safe, -total_farms_safe)
 
+####################################################################################################
+### balance and assumption checks ###
+####################################################################################################
 
-### balance  and assumption checks ###
-# at baseline (2007) the counties in our would-be treatment group have slightly higher labor share of total expenditures (1.48pp dif)
-# and slightly lower total expenditures. additionally, treated group experienced much higher exposure to sc than the untreated group
-# which likely has to do with longevity of program post activation since it went offline in 2013. 
-# treated group, again, means pre 2011 rollout of sc in a given county. 
-
-## balance tables with binary treatment indicator ##
-# baseline balance table for treated versus control groups 2002
-main |>
-  filter(year == 2002) |>
-  group_by(treated) |>
-  summarise(
-    n              = n(),
-    mech     = mean(mech_share_broad, na.rm = TRUE),
-    labor          = mean(labor_share, na.rm = TRUE),
-    expenditures    = mean(total_exp, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE),
-    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
-    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
-    mig_share = mean(migrant_farm_share, na.rm = TRUE)
-  )
-# baseline balance table for treated versus control groups 2007
-main |>
-  filter(year == 2007) |>
-  group_by(treated) |>
-  summarise(
-    n              = n(),
-    mech     = mean(mech_share_broad, na.rm = TRUE),
-    labor          = mean(labor_share, na.rm = TRUE),
-    expenditures    = mean(total_exp, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
-    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
-    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
-    mig_share = mean(migrant_farm_share, na.rm = TRUE)
-  )
-
-# mid term balance table for treated versus control groups
-main |>
-  filter(year == 2012) |>
-  group_by(treated) |>
-  summarise(
-    n              = n(),
-    mech     = mean(mech_share_broad, na.rm = TRUE),
-    labor          = mean(labor_share, na.rm = TRUE),
-    expenditures    = mean(total_exp, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
-    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
-    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
-    mig_share = mean(migrant_farm_share, na.rm = TRUE)
-  )
-
-# post-treatment balance table for treated versus control groups
-main |>
-  filter(year == 2017) |>
-  group_by(treated) |>
-  summarise(
-    n              = n(),
-    mech     = mean(mech_share_broad, na.rm = TRUE),
-    labor          = mean(labor_share, na.rm = TRUE),
-    expenditures    = mean(total_exp, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
-    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
-    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
-    mig_share = mean(migrant_farm_share, na.rm = TRUE)
-  )
-
-# categorical exposure intensity tiers, for balance comparisons beyond the binary treated/control split.
-# built from exposure_pooled specifically (not exposure_yr), since exposure_pooled is time-invariant per
-# county and populated consistently across all three periods - exposure_yr has no signal at all in 2017
-# (see issues.txt), so tiers built from it would be meaningless in the post-treatment table.
-# NA/0 -> Control: these counties have zero SC-attributable cases during the 2008-2013 rollout window, a
-# structural zero (not missing data - see the exposure_pooled construction above), so it's safe to fold
-# them into one tier rather than leave them NA. Low/Medium/High are terciles computed only among counties with
-# exposure_pooled > 0, so the three nonzero bins split real variation rather than being swamped by the
-# ~58% of counties sitting at zero. Note this is a stricter "control" than treated == 0: a county that
-# activated after 2011 (so treated == 0) can still show up in Low/Medium/High if it accumulated real
-# exposure by the time of a later census wave.
-exposure_cutoffs <- main |>
-  distinct(state, county, exposure_pooled) |>
-  filter(exposure_pooled > 0) |>
-  pull(exposure_pooled) |>
-  quantile(probs = c(1/3, 2/3), na.rm = TRUE)
-
-main <- main |>
-  mutate(
-    exposure_tier = case_when(
-      is.na(exposure_pooled) | exposure_pooled == 0 ~ "Control",
-      exposure_pooled <= exposure_cutoffs[1]         ~ "Low",
-      exposure_pooled <= exposure_cutoffs[2]         ~ "Medium",
-      TRUE                                            ~ "High"
-    ),
-    exposure_tier = factor(exposure_tier, levels = c("Control", "Low", "Medium", "High"))
-  )
-
-## balance tables with categorical treatment intensity groups ##
-# baseline balance table 2002
-# shows what we would expect: higher exposure = higher labor at baseline
-main |>
-  filter(year == 2002) |>
-  group_by(exposure_tier) |>
-  summarise(
-    n              = n(),
-    mech     = mean(mech_share_broad, na.rm = TRUE),
-    labor          = mean(labor_share, na.rm = TRUE),
-    expenditures    = mean(total_exp, na.rm = TRUE),
-    exposure       = mean(exposure_pooled, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
-    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
-    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
-    mig_share = mean(migrant_farm_share, na.rm = TRUE)
-  )
-# baseline balance table 2007
-# higher exposure tiers have lower baseline mechanization and higher labor share
-main |>
-  filter(year == 2007) |>
-  group_by(exposure_tier) |>
-  summarise(
-    n              = n(),
-    mech     = mean(mech_share_broad, na.rm = TRUE),
-    labor          = mean(labor_share, na.rm = TRUE),
-    expenditures    = mean(total_exp, na.rm = TRUE),
-    exposure       = mean(exposure_pooled, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
-    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
-    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
-    mig_share = mean(migrant_farm_share, na.rm = TRUE)
-  )
-# mid term balance table
-main |>
-  filter(year == 2012) |>
-  group_by(exposure_tier) |>
-  summarise(
-    n              = n(),
-    mech     = mean(mech_share_broad, na.rm = TRUE),
-    labor          = mean(labor_share, na.rm = TRUE),
-    expenditures    = mean(total_exp, na.rm = TRUE),
-    exposure       = mean(exposure_pooled, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
-    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
-    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
-    mig_share = mean(migrant_farm_share, na.rm = TRUE)
-  )
-# post-treatment balance table
-# mech share increases most for those high exposure counties
-main |>
-  filter(year == 2017) |>
-  group_by(exposure_tier) |>
-  summarise(
-    n              = n(),
-    mech     = mean(mech_share_broad, na.rm = TRUE),
-    labor          = mean(labor_share, na.rm = TRUE),
-    expenditures    = mean(total_exp, na.rm = TRUE),
-    exposure       = mean(exposure_pooled, na.rm = TRUE),
-    specialty_share = mean(specialty_share, na.rm = TRUE)*100,
-    total_ag_acres = mean(total_ag_acres, na.rm = TRUE),
-    irrigated_acres = mean(irrigated_acres, na.rm = TRUE),
-    worker_acres = mean(hired_workers_per_acre, na.rm = TRUE),
-    mig_share = mean(migrant_farm_share, na.rm = TRUE)
-  )
-
-## checking pre trends ##
+## checking pre trends ##---------------------------------------------------------------------------
 FIGS_DIR <- "/Users/kieran/Documents/GitHub/labor_and_automation/figs/primary"
-
 # labor share binary
 p_pretrend_labor_treated <- main |>
   group_by(year, treated) |>
@@ -553,49 +376,9 @@ p_pretrend_labor_treated <- main |>
   theme_light()
 ggsave(file.path(FIGS_DIR, "pretrend_labor_share_treated.png"), p_pretrend_labor_treated, width = 8, height = 6, dpi = 300)
 
-# mech share binary
-p_pretrend_mech_treated <- main |>
-  group_by(year, treated) |>
-  summarise(mech_share_broad = mean(mech_share_broad, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = year, y = mech_share_broad*100, color = factor(treated))) +
-  geom_line() +
-  ylim(25, 30) +
-  labs(title = "Pre-Trends: Mechanization Share by Treatment Status", color = "Treated") +
-  theme_light()
-ggsave(file.path(FIGS_DIR, "pretrend_mech_share_treated.png"), p_pretrend_mech_treated, width = 8, height = 6, dpi = 300)
-
-# hired workers per acre by exposure tier, Low/Medium/High collapsed into one "Exposed" line (recomputed
-# directly on the pooled Low+Medium+High counties, not averaged from the three tier-level medians) versus
-# Control - simplifies the 4-line plot down to a 2-line Control-vs-any-exposure comparison.
-p_pretrend_workers_acre_tier <- main |>
-  mutate(exposure_group = if_else(exposure_tier == "Control", "Control", "Exposed")) |>
-  group_by(year, exposure_group) |>
-  summarise(hired_workers_per_acre = median(hired_workers_per_acre, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = year, y = hired_workers_per_acre, color = factor(exposure_group))) +
-  geom_line() +
-  ylim(0, 0.02) +
-  labs(title = "Pre-Trends: Hired Workers Per Acre, Control vs Exposed", color = "Exposure") +
-  theme_light()
-ggsave(file.path(FIGS_DIR, "p_pretrend_workers_acre_tier.png"), p_pretrend_workers_acre_tier, width = 8, height = 6, dpi = 300)
-
-# migrant farm share by exposure tier, Low/Medium/High collapsed into one "Exposed" line (same as the
-# hired workers per acre plot above) versus Control.
-p_pretrend_migrant_share_tier <- main |>
-  mutate(exposure_group = if_else(exposure_tier == "Control", "Control", "Exposed")) |>
-  group_by(year, exposure_group) |>
-  summarise(migrant_farm_share = median(migrant_farm_share, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = year, y = migrant_farm_share, color = factor(exposure_group))) +
-  geom_line() +
-  ylim(0, 0.07) +
-  labs(title = "Pre-Trends: Migrant-Farm Share, Control vs Exposed", color = "Exposure") +
-  theme_light()
-ggsave(file.path(FIGS_DIR, "p_pretrend_migrant_share_tier.png"), p_pretrend_migrant_share_tier, width = 8, height = 6, dpi = 300)
-
-## secure communities-related exposure intensity over time ##
+## secure communities-related exposure intensity over time ##---------------------------------------
 # state, county, year (2008-2017) panel of SC-attributable detainers per 10,000 population 
-# SC-attributable restriction as county_exposure_pooled/county_exposure_yr above (a genuine detainer, or a
-# CAP Local Incarceration apprehension, since SC's fingerprint screening still applies at local jail
-# booking even when the match never rose to a formal detainer). 
+# SC-attributable restriction as county_exposure_pooled/county_exposure_yr above. 
 sc_detainer_rate_yearly <- county_pop |>
   distinct(state, county, population) |>
   semi_join(ag_counties, by = c("state", "county")) |>
@@ -657,4 +440,293 @@ het_dose_fig <- ggplot(
 ggsave(file.path(FIGS_DIR, "het_dose_fig.png"), het_dose_fig,
        width = 10, height = 7, dpi = 300)
 
-### analysis ###
+####################################################################################################
+### regressions ###
+####################################################################################################
+
+####################################################################################################
+### staggered event-study with time-varying treatment intensity (dose), county-year level ###
+####################################################################################################
+
+## specify config ##---------------------------------------------------------------------------------
+# outcome variable to test 
+OUTCOME_VAR <- "mech_share_narrow"
+
+# control variables e.g. c("specialty_share", "irrigated_acres"). Leave as character(0) for none. 
+CONTROL_VARS <- character(0)
+
+# baseline (2007) control variables, interacted with event_time/bin rather than added flat to
+# control for cross-farm time-variant heterogeneity: a FIXED pre-treatment snapshot of each variable
+BASELINE_CONTROL_VARS <- c("specialty_share")
+
+# event-study window (event_time values outside this range are dropped from Model 1 only;
+# Model 2's bins use the full, unwindowed data). Edit this pair to widen/narrow the window.
+EVENT_WINDOW <- c(-5, 5)
+
+OUTPUT_DIR <- "output"
+
+if (!dir.exists(OUTPUT_DIR)) dir.create(OUTPUT_DIR, recursive = TRUE)
+
+## read data ##--------------------------------------------------------------------------------------
+main_es <- main |>
+  select(
+    county, year, state, first_detainer_year, exposure_yr, labor_share, mech_share_broad, mech_share_narrow,
+    specialty_acres, field_crop_acres, specialty_share, harvested_acres, irrigated_acres, hired_workers, hired_labor_exp,
+    migrant_workers, migrant_farms_hired, migrant_farms, total_farms, land_asset_value, hired_workers_per_acre,
+    hired_labor_exp_per_acre
+  ) |>
+  mutate(
+    county = paste(state, county),
+    G      = first_detainer_year,
+    dose   = replace_na(exposure_yr, 0),
+    y      = .data[[OUTCOME_VAR]]
+  )
+
+# pulls each BASELINE_CONTROL_VARS column's 2007 value only, suffixed "_2007", and joins it back onto
+# every year for that county (fixed, time-invariant snapshot).
+baseline_vars_2007 <- paste0(BASELINE_CONTROL_VARS, "_2007")
+baseline_2007_es <- main |>
+  filter(year == 2007) |>
+  mutate(county = paste(state, county)) |>
+  select(county, all_of(BASELINE_CONTROL_VARS)) |>
+  rename_with(~ paste0(., "_2007"), all_of(BASELINE_CONTROL_VARS))
+
+main_es <- main_es |>
+  left_join(baseline_2007_es, by = "county")
+
+## validate required columns ##----------------------------------------------------------------------
+required_cols <- c("county", "year", "G", "dose", "y", CONTROL_VARS, baseline_vars_2007)
+missing_cols <- setdiff(required_cols, names(main_es))
+if (length(missing_cols) > 0) {
+  stop(
+    "main_es is missing required column(s): ", paste(missing_cols, collapse = ", "),
+    ". Expected columns: ", paste(required_cols, collapse = ", "),
+    ". Add missing columns to the select() above, or check OUTCOME_VAR/CONTROL_VARS/",
+    "BASELINE_CONTROL_VARS in CONFIGURATION."
+  )
+}
+
+## check G (first treatment year) is constant within county ##---------------------------------------
+# G should be a single fixed value per county (staggered adoption = one adoption year per unit). 
+check_G_constant <- function(data) {
+  offenders <- data |>
+    group_by(county) |>
+    summarise(n_distinct_G = n_distinct(G, na.rm = TRUE), .groups = "drop") |>
+    filter(n_distinct_G > 1)
+  if (nrow(offenders) > 0) {
+    warning(
+      nrow(offenders), " counties have more than one distinct value of G (first treatment year): ",
+      paste(head(offenders$county, 10), collapse = ", "),
+      if (nrow(offenders) > 10) ", ..." else "",
+      ". Treatment timing must be constant within a county for this design - check your data."
+    )
+  }
+  invisible(offenders)
+}
+check_G_constant(main_es)
+
+## construct treatment timing variables ##-----------------------------------------------------------
+# convention used throughout: G is NA for never-treated counties 
+main_es <- main_es |>
+  mutate(
+    ever_treated = !is.na(G)
+  )
+
+## construct event time ##---------------------------------------------------------------------------
+# event_time = calendar year minus the county's own adoption year. NA for never-treated counties (G is
+# NA). identification comes from variation in *when* counties are treated and how their dose evolves
+# relative to their own adoption, rather than a a treated-vs-never-treated contrast.
+main_es <- main_es |>
+  mutate(event_time = year - G)
+
+## construct binned event time ##--------------------------------------------------------------------
+# pre  : event_time < 0            (before adoption)
+# early: 0 <= event_time <= 2      (first 3 post-adoption years)
+# late : event_time >= 3           (further out post-adoption)
+# NA event_time (never-treated)
+main_es <- main_es |>
+  mutate(bin = case_when(
+    is.na(event_time)                          ~ NA_character_,
+    event_time < 0                             ~ "pre",
+    event_time >= 0 & event_time <= 2          ~ "early",
+    event_time >= 3                            ~ "late"
+  ))
+
+## data-quality warnings ##--------------------------------------------------------------------------
+# dose should be 0 or NA before adoption by construction 
+n_pretreatment_nonzero_dose <- main_es |> filter(event_time < 0, !is.na(dose), dose != 0) |> nrow()
+if (n_pretreatment_nonzero_dose > 0) {
+  warning(
+    n_pretreatment_nonzero_dose, " county-year observations have a nonzero dose in a pre-treatment ",
+    "period (event_time < 0). Check whether `dose` is coded correctly relative to `G`."
+  )
+}
+
+# counties with G <= the first year they're observed have no pre-treatment observations at all, and
+# can't contribute to identifying early/negative event-time coefficients.
+counties_always_treated <- main_es |>
+  group_by(county) |>
+  summarise(first_year_observed = min(year), G = first(G), .groups = "drop") |>
+  filter(!is.na(G), G <= first_year_observed)
+if (nrow(counties_always_treated) > 0) {
+  warning(
+    nrow(counties_always_treated), " counties are treated at or before the first year they're observed ",
+    "(no pre-treatment data): ", paste(head(counties_always_treated$county, 10), collapse = ", "),
+    if (nrow(counties_always_treated) > 10) ", ..." else ""
+  )
+}
+
+# counties with zero rows where event_time < 0 can't help identify the pre-period at all
+counties_no_pretrend_obs <- main_es |>
+  filter(ever_treated) |>
+  group_by(county) |>
+  summarise(has_pre = any(event_time < 0, na.rm = TRUE), .groups = "drop") |>
+  filter(!has_pre)
+if (nrow(counties_no_pretrend_obs) > 0) {
+  warning(
+    nrow(counties_no_pretrend_obs), " treated counties have no pre-treatment (event_time < 0) ",
+    "observations at all."
+  )
+}
+
+## diagnostic summaries ##---------------------------------------------------------------------------
+cat("\n==================== DIAGNOSTIC SUMMARY ====================\n")
+cat("N counties:", n_distinct(main_es$county), "\n")
+cat("N years:   ", n_distinct(main_es$year), "(", min(main_es$year, na.rm = TRUE), "-", max(main_es$year, na.rm = TRUE), ")\n")
+
+cat("\nRollout year (G) distribution (excluding never-treated):\n")
+print(main_es |> distinct(county, G) |> filter(!is.na(G)) |> count(G) |> arrange(G))
+
+cat("\nN never-treated counties (G is NA):", n_distinct(main_es$county[is.na(main_es$G)]), "\n")
+
+cat("\nEvent-time distribution (county-year observations):\n")
+print(main_es |> filter(!is.na(event_time)) |> count(event_time) |> arrange(event_time))
+
+cat("\nBinned event-time distribution:\n")
+print(main_es |> filter(!is.na(bin)) |> count(bin))
+cat("==============================================================\n\n")
+
+# builds the "+ control1 + control2" formula fragment from CONTROL_VARS (empty string if none), plus the
+# baseline-2007 controls interacted with event_time or bin 
+control_terms <- if (length(CONTROL_VARS) > 0) paste0(" + ", paste(CONTROL_VARS, collapse = " + ")) else ""
+baseline_terms_canonical <- if (length(baseline_vars_2007) > 0) {
+  paste0(" + ", paste(paste0(baseline_vars_2007, ":factor(event_time)"), collapse = " + "))
+} else ""
+baseline_terms_binned <- if (length(baseline_vars_2007) > 0) {
+  paste0(" + ", paste(paste0(baseline_vars_2007, ":bin"), collapse = " + "))
+} else ""
+na_check_cols <- c("y", "dose", "county", "year", CONTROL_VARS, baseline_vars_2007)
+
+## estimate canonical event-study with event_time x dose ##------------------------------------------
+# Y_jt = alpha_j + lambda_t + sum_{e != -1} beta_e * dose_jt * 1(event_time = e) + [controls] + epsilon_jt
+#
+# beta_e is the average marginal effect of a one-unit increase in dose, at event time e, relative to
+# event time -1 (the reference period: year right before adoption)
+#
+# restricted to the configured EVENT_WINDOW so the endpoints aren't estimated off a handful of counties
+# observed very far from their own adoption year. 
+main_es_window <- main_es |>
+  filter(!is.na(event_time), event_time >= EVENT_WINDOW[1], event_time <= EVENT_WINDOW[2]) |>
+  # drop rows missing anything actually used in estimation 
+  filter(if_all(all_of(na_check_cols), ~ !is.na(.)))
+
+cat("Canonical event-study estimation sample: ", nrow(main_es_window), " county-year observations, ",
+    n_distinct(main_es_window$county), " counties, event_time in [", EVENT_WINDOW[1], ", ", EVENT_WINDOW[2],
+    "]\n", sep = "")
+
+
+# the cannonical reference model 
+# includes county and state^year fixed effects 
+canonical_formula <- as.formula(paste0(
+  "y ~ i(event_time, dose, ref = -1)", control_terms, baseline_terms_canonical, " | county + state^year"
+))
+cat("Canonical model formula:", deparse(canonical_formula), "\n")
+model_canonical <- feols(
+  canonical_formula,
+  data = main_es_window,
+  cluster = ~county
+)
+
+print(summary(model_canonical))
+
+## estimate binned event-study ##--------------------------------------------------------------------
+# collapses event time into 3 bins (pre / early / late) instead of estimating
+# one coefficient per exact event-year 
+df_binned <- main_es |>
+  filter(if_all(all_of(c(na_check_cols, "bin")), ~ !is.na(.)))
+
+binned_formula <- as.formula(paste0(
+  "y ~ i(bin, dose, ref = \"pre\")", control_terms, baseline_terms_binned, " | county + year"
+))
+cat("Binned model formula:", deparse(binned_formula), "\n")
+model_binned <- feols(
+  binned_formula,
+  data = df_binned,
+  cluster = ~county
+)
+
+print(summary(model_binned))
+
+## plot coefficients ##-----------------------------------------------------------------------------
+
+# canonical event-study plot
+canonical_coefs <- tidy(model_canonical, conf.int = TRUE) |>
+  filter(str_detect(term, "^event_time::")) |>
+  mutate(event_time = as.numeric(str_extract(term, "(?<=::)-?[0-9]+(?=:)")))
+
+p_canonical <- ggplot(canonical_coefs, aes(x = event_time, y = estimate)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_vline(xintercept = -1, linetype = "dotted", color = "grey50") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.15) +
+  geom_point(size = 2) +
+  labs(
+    title = "Event-Study: Marginal Effect of Dose by Event Time",
+    subtitle = "Reference period: event_time = -1 (year before adoption)",
+    x = "Event time (years since adoption)",
+    y = "Estimated marginal effect of dose"
+  ) +
+  theme_minimal()
+
+ggsave(file.path(OUTPUT_DIR, "canonical_event_study.png"), p_canonical, width = 9, height = 6, dpi = 300)
+
+# binned event-study plot 
+binned_coefs <- tidy(model_binned, conf.int = TRUE) |>
+  filter(str_detect(term, "^bin::")) |>
+  mutate(bin_label = str_extract(term, "(?<=::)[a-z]+(?=:)"),
+         bin_label = factor(bin_label, levels = c("early", "late")))
+
+p_binned <- ggplot(binned_coefs, aes(x = bin_label, y = estimate)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.15) +
+  geom_point(size = 3) +
+  labs(
+    title = "Binned Event-Study: Marginal Effect of Dose",
+    subtitle = "Reference period: pre-adoption",
+    x = "Period (relative to adoption)",
+    y = "Estimated marginal effect of dose"
+  ) +
+  theme_minimal()
+
+ggsave(file.path(OUTPUT_DIR, "binned_event_study.png"), p_binned, width = 7, height = 6, dpi = 300)
+
+## export regression tables and coefficient CSVs ##-------------------------------------------------
+saveRDS(model_canonical, file.path(OUTPUT_DIR, "canonical_model.rds"))
+saveRDS(model_binned,    file.path(OUTPUT_DIR, "binned_model.rds"))
+
+write_csv(canonical_coefs, file.path(OUTPUT_DIR, "canonical_coefficients.csv"))
+write_csv(binned_coefs,    file.path(OUTPUT_DIR, "binned_coefficients.csv"))
+
+writeLines(
+  c(
+    "==================== CANONICAL EVENT-STUDY MODEL ====================",
+    capture.output(summary(model_canonical)),
+    "",
+    "==================== BINNED EVENT-STUDY MODEL ========================",
+    capture.output(summary(model_binned))
+  ),
+  file.path(OUTPUT_DIR, "regression_summary.txt")
+)
+
+cat("\nSaved to '", OUTPUT_DIR, "/': canonical_model.rds, binned_model.rds, ",
+    "canonical_coefficients.csv, binned_coefficients.csv, ",
+    "canonical_event_study.png, binned_event_study.png, regression_summary.txt\n", sep = "")
