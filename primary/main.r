@@ -5,10 +5,6 @@
 ####################################################################################################
 
 ####################################################################################################
-#### begin ####
-####################################################################################################
-
-####################################################################################################
 ### prelude ###
 ####################################################################################################
 
@@ -85,6 +81,7 @@ expenditures_clean <- expenditures |>
     labor_hired_exp = as.numeric(labor_hired_exp),
     spacerent_total_exp = as.numeric(spacerent_total_exp),
     repairs_exp = as.numeric(repairs_exp),
+    mech_labor_share = (fuel_total_exp+repairs_exp+utilities_exp+machinery_rent_exp+depreciation_exp)/(labor_hired_exp+labor_contract_exp)
   )
 
 ## 2. secure communities data from TRAC ##----------------------------------------------------------
@@ -360,22 +357,8 @@ main <- expenditures_clean |>
   select(-harvested_acres_safe, -total_farms_safe)
 
 ####################################################################################################
-### balance and assumption checks ###
+### event study justification ###
 ####################################################################################################
-
-## checking pre trends ##---------------------------------------------------------------------------
-FIGS_DIR <- "/Users/kieran/Documents/GitHub/labor_and_automation/figs/primary"
-# labor share binary
-p_pretrend_labor_treated <- main |>
-  group_by(year, treated) |>
-  summarise(labor_share = mean(labor_share, na.rm = TRUE), .groups = "drop") |>
-  ggplot(aes(x = year, y = labor_share*100, color = factor(treated))) +
-  geom_line() +
-  ylim(5, 12) +
-  labs(title = "Pre-Trends: Labor Share by Treatment Status", color = "Treated") +
-  theme_light()
-ggsave(file.path(FIGS_DIR, "pretrend_labor_share_treated.png"), p_pretrend_labor_treated, width = 8, height = 6, dpi = 300)
-
 ## secure communities-related exposure intensity over time ##---------------------------------------
 # state, county, year (2008-2017) panel of SC-attributable detainers per 10,000 population 
 # SC-attributable restriction as county_exposure_pooled/county_exposure_yr above. 
@@ -425,6 +408,8 @@ county_gradient_palette <- colorRampPalette(c("#7CA982", "#E0EEC6", "#f4a259", "
   n_distinct(detainer_plot_data$state)
 )
 
+FIGS_DIR <- "/Users/kieran/Documents/GitHub/labor_and_automation/figs/primary"
+
 # create figure
 het_dose_fig <- ggplot(
   data = detainer_plot_data,
@@ -441,23 +426,19 @@ ggsave(file.path(FIGS_DIR, "het_dose_fig.png"), het_dose_fig,
        width = 10, height = 7, dpi = 300)
 
 ####################################################################################################
-### regressions ###
-####################################################################################################
-
-####################################################################################################
 ### staggered event-study with time-varying treatment intensity (dose), county-year level ###
 ####################################################################################################
-
+# specify outcome variable, controls, and event window to estimate both binned and full es
 ## specify config ##---------------------------------------------------------------------------------
 # outcome variable to test 
-OUTCOME_VAR <- "mech_share_narrow"
+OUTCOME_VAR <- "hired_workers_per_acre"
 
 # control variables e.g. c("specialty_share", "irrigated_acres"). Leave as character(0) for none. 
 CONTROL_VARS <- character(0)
 
 # baseline (2007) control variables, interacted with event_time/bin rather than added flat to
 # control for cross-farm time-variant heterogeneity: a FIXED pre-treatment snapshot of each variable
-BASELINE_CONTROL_VARS <- c("specialty_share")
+BASELINE_CONTROL_VARS <- c( "specialty_share")
 
 # event-study window (event_time values outside this range are dropped from Model 1 only;
 # Model 2's bins use the full, unwindowed data). Edit this pair to widen/narrow the window.
@@ -473,7 +454,7 @@ main_es <- main |>
     county, year, state, first_detainer_year, exposure_yr, labor_share, mech_share_broad, mech_share_narrow,
     specialty_acres, field_crop_acres, specialty_share, harvested_acres, irrigated_acres, hired_workers, hired_labor_exp,
     migrant_workers, migrant_farms_hired, migrant_farms, total_farms, land_asset_value, hired_workers_per_acre,
-    hired_labor_exp_per_acre
+    hired_labor_exp_per_acre, total_exp, mech_labor_share
   ) |>
   mutate(
     county = paste(state, county),
@@ -534,7 +515,7 @@ main_es <- main_es |>
 
 ## construct event time ##---------------------------------------------------------------------------
 # event_time = calendar year minus the county's own adoption year. NA for never-treated counties (G is
-# NA). identification comes from variation in *when* counties are treated and how their dose evolves
+# NA). identification comes from variation in when counties are treated and how their dose evolves
 # relative to their own adoption, rather than a a treated-vs-never-treated contrast.
 main_es <- main_es |>
   mutate(event_time = year - G)
@@ -617,7 +598,7 @@ baseline_terms_binned <- if (length(baseline_vars_2007) > 0) {
 } else ""
 na_check_cols <- c("y", "dose", "county", "year", CONTROL_VARS, baseline_vars_2007)
 
-## estimate canonical event-study with event_time x dose ##------------------------------------------
+## estimate canonical event-study with event_time x dose ##-------------------------------------------
 # Y_jt = alpha_j + lambda_t + sum_{e != -1} beta_e * dose_jt * 1(event_time = e) + [controls] + epsilon_jt
 #
 # beta_e is the average marginal effect of a one-unit increase in dose, at event time e, relative to
@@ -656,7 +637,7 @@ df_binned <- main_es |>
   filter(if_all(all_of(c(na_check_cols, "bin")), ~ !is.na(.)))
 
 binned_formula <- as.formula(paste0(
-  "y ~ i(bin, dose, ref = \"pre\")", control_terms, baseline_terms_binned, " | county + year"
+  "y ~ i(bin, dose, ref = \"pre\")", control_terms, baseline_terms_binned, " | county + state^year"
 ))
 cat("Binned model formula:", deparse(binned_formula), "\n")
 model_binned <- feols(
@@ -667,7 +648,27 @@ model_binned <- feols(
 
 print(summary(model_binned))
 
-## plot coefficients ##-----------------------------------------------------------------------------
+## checking pre trends ##---------------------------------------------------------------------------
+# labor share by event time (year relative to each county's own SC adoption year) 
+pretrend_event_data <- main_es |>
+  filter(!is.na(event_time), !is.na(labor_share)) |>
+  group_by(event_time) |>
+  summarise(labor_share = mean(labor_share, na.rm = TRUE), n = n(), .groups = "drop")
+
+p_pretrend_labor_treated <- pretrend_event_data |>
+  ggplot(aes(x = event_time, y = labor_share * 100)) +
+  geom_vline(xintercept = -0.5, linetype = "dotted", color = "grey50") +
+  geom_line() +
+  geom_point(aes(size = n)) +
+  labs(
+    title = "Labor Share by Event Time (Ever-Treated Counties)",
+    subtitle = "Point size: N observations at that event time",
+    x = "Event time (years since county's SC adoption)", y = "Labor share of expenditures (%)",
+    size = "N obs"
+  ) +
+  theme_light()
+ggsave(file.path(FIGS_DIR, "pretrend_labor_share_treated.png"), p_pretrend_labor_treated, width = 8, height = 6, dpi = 300)
+
 
 # canonical event-study plot
 canonical_coefs <- tidy(model_canonical, conf.int = TRUE) |>
@@ -709,24 +710,71 @@ p_binned <- ggplot(binned_coefs, aes(x = bin_label, y = estimate)) +
 
 ggsave(file.path(OUTPUT_DIR, "binned_event_study.png"), p_binned, width = 7, height = 6, dpi = 300)
 
-## export regression tables and coefficient CSVs ##-------------------------------------------------
-saveRDS(model_canonical, file.path(OUTPUT_DIR, "canonical_model.rds"))
-saveRDS(model_binned,    file.path(OUTPUT_DIR, "binned_model.rds"))
+####################################################################################################
+### dose-quartile robustness: same spec as above, but dose intensity split into quartiles ###
+####################################################################################################
+# same OUTCOME_VAR/CONTROL_VARS/BASELINE_CONTROL_VARS/EVENT_WINDOW as the continuous-dose models above.
+# `dose` in i(bin, dose, ref="pre") / i(event_time, dose, ref=-1) is continuous, so those coefficients
+# are a single linear marginal effect per unit of dose -- if a handful of high-dose counties are driving
+# it (plausible, given how unstable some of the continuous-dose coefficients have been), a linear slope
+# masks that. This splits counties into dose quartiles instead, using exposure_pooled (the FIXED
+# 2008-2013 pooled SC-attributable rate per county) rather than the time-varying per-year `dose`, so a
+# county's dose group doesn't shift across its own pre/early/late periods. is_q2_dose/is_q3_dose/
+# is_q4_dose are binary dummies for quartile membership (quartile 1, lowest dose, is the implicit
+# omitted group).
+county_dose_quartile <- main |>
+  mutate(county = paste(state, county)) |>
+  distinct(county, exposure_pooled) |>
+  mutate(dose_quartile = ntile(exposure_pooled, 4))
 
-write_csv(canonical_coefs, file.path(OUTPUT_DIR, "canonical_coefficients.csv"))
-write_csv(binned_coefs,    file.path(OUTPUT_DIR, "binned_coefficients.csv"))
+cat("\nDose quartile cutoffs (exposure_pooled = SC-attributable cases per 10,000 population, pooled 2008-2013):\n")
+print(county_dose_quartile |>
+  group_by(dose_quartile) |>
+  summarise(n = n(), min = min(exposure_pooled), max = max(exposure_pooled), .groups = "drop"))
 
-writeLines(
-  c(
-    "==================== CANONICAL EVENT-STUDY MODEL ====================",
-    capture.output(summary(model_canonical)),
-    "",
-    "==================== BINNED EVENT-STUDY MODEL ========================",
-    capture.output(summary(model_binned))
-  ),
-  file.path(OUTPUT_DIR, "regression_summary.txt")
+main_es_quartile <- main_es |>
+  left_join(county_dose_quartile |> select(county, dose_quartile), by = "county") |>
+  mutate(
+    is_q2_dose = as.integer(dose_quartile == 2),
+    is_q3_dose = as.integer(dose_quartile == 3),
+    is_q4_dose = as.integer(dose_quartile == 4)
+  )
+
+
+## estimate binned event-study, dose quartiles ##------------------------------------------------------
+df_binned_quartile <- main_es_quartile |>
+  filter(if_all(all_of(c(na_check_cols, "bin")), ~ !is.na(.)))
+
+binned_formula_quartile <- as.formula(paste0(
+  "y ~ i(bin, ref = \"pre\") + i(bin, is_q2_dose, ref = \"pre\") + i(bin, is_q3_dose, ref = \"pre\") + ",
+  "i(bin, is_q4_dose, ref = \"pre\")",
+  control_terms, baseline_terms_binned, " | county + state^year"
+))
+cat("Binned (dose-quartile) model formula:", deparse(binned_formula_quartile), "\n")
+model_binned_quartile <- feols(
+  binned_formula_quartile,
+  data = df_binned_quartile,
+  cluster = ~county
 )
 
-cat("\nSaved to '", OUTPUT_DIR, "/': canonical_model.rds, binned_model.rds, ",
-    "canonical_coefficients.csv, binned_coefficients.csv, ",
-    "canonical_event_study.png, binned_event_study.png, regression_summary.txt\n", sep = "")
+print(summary(model_binned_quartile))
+
+## estimate canonical event-study, dose quartiles ##---------------------------------------------------
+main_es_window_quartile <- main_es_quartile |>
+  filter(!is.na(event_time), event_time >= EVENT_WINDOW[1], event_time <= EVENT_WINDOW[2]) |>
+  filter(if_all(all_of(na_check_cols), ~ !is.na(.)))
+
+canonical_formula_quartile <- as.formula(paste0(
+  "y ~ i(event_time, ref = -1) + i(event_time, is_q2_dose, ref = -1) + i(event_time, is_q3_dose, ref = -1) + ",
+  "i(event_time, is_q4_dose, ref = -1)",
+  control_terms, baseline_terms_canonical, " | county + state^year"
+))
+cat("Canonical (dose-quartile) model formula:", deparse(canonical_formula_quartile), "\n")
+model_canonical_quartile <- feols(
+  canonical_formula_quartile,
+  data = main_es_window_quartile,
+  cluster = ~county
+)
+
+print(summary(model_canonical_quartile))
+

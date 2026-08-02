@@ -1,87 +1,41 @@
 ==================== CANONICAL EVENT-STUDY MODEL ====================
 OLS estimation, Dep. Var.: y
-Observations: 1,856
-Fixed-effects: county: 754,  state^year: 77
+Observations: 1,905
+Fixed-effects: county: 777,  state^year: 77
 Standard-errors: Clustered (county) 
-                                                 Estimate   Std. Error
-event_time::-5:dose                         -6.553218e-01 5.973173e-01
-event_time::-3:dose                         -1.755391e+00 1.324222e+00
-event_time::-2:dose                          1.220835e+01 4.065124e+01
-event_time::0:dose                          -9.090465e-03 6.346428e-03
-event_time::1:dose                          -3.872970e-03 3.748502e-03
-event_time::2:dose                          -1.020699e-02 1.721590e-02
-event_time::3:dose                          -1.581088e-01 2.387866e-01
-specialty_share_2007:factor(event_time)-5    1.777501e-02 3.238150e-02
-specialty_share_2007:factor(event_time)-4   -3.754814e-02 1.122901e-01
-specialty_share_2007:factor(event_time)-3    1.825340e-01 2.786970e-01
-specialty_share_2007:factor(event_time)-2   -1.787001e+00 1.656374e+00
-specialty_share_2007:factor(event_time)-1    2.036102e-05 1.225642e-02
-specialty_share_2007:factor(event_time)0     1.267913e-01 8.692134e-02
-factor(event_time)-5:mech_share_narrow_2007  1.062557e-01 2.804023e-01
-factor(event_time)-4:mech_share_narrow_2007  1.929016e-01 7.340815e-01
-factor(event_time)-3:mech_share_narrow_2007 -2.326556e+00 2.753832e+00
-factor(event_time)-2:mech_share_narrow_2007  6.121808e+00 1.024876e+01
-factor(event_time)-1:mech_share_narrow_2007  3.299711e-02 1.095873e-02
-factor(event_time)0:mech_share_narrow_2007   5.793764e-02 5.183889e-01
-factor(event_time)-5:harvested_acres_2007    2.642000e-08 5.380000e-08
-factor(event_time)-4:harvested_acres_2007    1.559000e-07 1.760800e-07
-factor(event_time)-3:harvested_acres_2007    2.144540e-06 1.439280e-06
-factor(event_time)-2:harvested_acres_2007   -9.513780e-06 1.703837e-05
-factor(event_time)-1:harvested_acres_2007    1.390000e-09 1.410000e-09
-factor(event_time)0:harvested_acres_2007    -1.254000e-07 8.979000e-08
-                                              t value  Pr(>|t|)    
-event_time::-5:dose                         -1.097108 0.2729448    
-event_time::-3:dose                         -1.325602 0.1853736    
-event_time::-2:dose                          0.300319 0.7640166    
-event_time::0:dose                          -1.432375 0.1524515    
-event_time::1:dose                          -1.033205 0.3018399    
-event_time::2:dose                          -0.592881 0.5534385    
-event_time::3:dose                          -0.662134 0.5080877    
-specialty_share_2007:factor(event_time)-5    0.548925 0.5832198    
-specialty_share_2007:factor(event_time)-4   -0.334385 0.7381821    
-specialty_share_2007:factor(event_time)-3    0.654955 0.5126967    
-specialty_share_2007:factor(event_time)-2   -1.078863 0.2809942    
-specialty_share_2007:factor(event_time)-1    0.001661 0.9986750    
-specialty_share_2007:factor(event_time)0     1.458690 0.1450674    
-factor(event_time)-5:mech_share_narrow_2007  0.378940 0.7048392    
-factor(event_time)-4:mech_share_narrow_2007  0.262780 0.7927924    
-factor(event_time)-3:mech_share_narrow_2007 -0.844843 0.3984668    
-factor(event_time)-2:mech_share_narrow_2007  0.597322 0.5504721    
-factor(event_time)-1:mech_share_narrow_2007  3.011034 0.0026906 ** 
-factor(event_time)0:mech_share_narrow_2007   0.111765 0.9110397    
-factor(event_time)-5:harvested_acres_2007    0.491009 0.6235633    
-factor(event_time)-4:harvested_acres_2007    0.885407 0.3762196    
-factor(event_time)-3:harvested_acres_2007    1.490011 0.1366400    
-factor(event_time)-2:harvested_acres_2007   -0.558374 0.5767551    
-factor(event_time)-1:harvested_acres_2007    0.983562 0.3256468    
-factor(event_time)0:harvested_acres_2007    -1.396694 0.1629171    
-... 15 variables were removed because of collinearity
-(specialty_share_2007:factor(event_time)1,
-specialty_share_2007:factor(event_time)2 and 13 others [full set in
-$collin.var])
+                                           Estimate Std. Error   t value Pr(>|t|)    
+event_time::-5:dose                       -0.195992   0.083712 -2.341251 0.019471 *  
+event_time::-3:dose                       -3.290506   1.833074 -1.795075 0.073031 .  
+event_time::-2:dose                       49.358220  48.490182  1.017901 0.309042    
+event_time::0:dose                        -0.011258   0.005260 -2.140197 0.032650 *  
+event_time::1:dose                        -0.013405   0.009962 -1.345600 0.178825    
+event_time::2:dose                        -0.058058   0.031968 -1.816118 0.069738 .  
+event_time::3:dose                        -0.084855   0.049503 -1.714150 0.086900 .  
+specialty_share_2007:factor(event_time)-5  0.047444   0.044020  1.077762 0.281475    
+specialty_share_2007:factor(event_time)-4  0.206844   0.166799  1.240075 0.215323    
+specialty_share_2007:factor(event_time)-3  0.066580   0.313000  0.212716 0.831604    
+specialty_share_2007:factor(event_time)-2 -1.567533   1.394276 -1.124263 0.261249    
+specialty_share_2007:factor(event_time)-1 -0.029671   0.024055 -1.233451 0.217781    
+specialty_share_2007:factor(event_time)0   0.094355   0.096360  0.979192 0.327790    
+... 5 variables were removed because of collinearity (specialty_share_2007:factor(event_time)1,
+specialty_share_2007:factor(event_time)2 and 3 others [full set in $collin.var])
 ---
 Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
-RMSE: 0.768744     Adj. R2: 0.188724
-                 Within R2: 0.011913
+RMSE: 0.788853     Adj. R2: 0.18564 
+                 Within R2: 0.006307
 
 ==================== BINNED EVENT-STUDY MODEL ========================
 OLS estimation, Dep. Var.: y
-Observations: 3,010
-Fixed-effects: county: 774,  year: 4
+Observations: 3,092
+Fixed-effects: county: 799,  state^year: 128
 Standard-errors: Clustered (county) 
-                                 Estimate Std. Error   t value Pr(>|t|) 
-bin::early:dose                 -0.004659   0.003374 -1.380960  0.16769 
-bin::late:dose                  -0.012957   0.025090 -0.516419  0.60571 
-specialty_share_2007:binearly   -0.309106   0.221782 -1.393737  0.16380 
-specialty_share_2007:binlate     0.040963   0.099067  0.413494  0.67936 
-binearly:mech_share_narrow_2007  0.489821   0.806218  0.607554  0.54366 
-binlate:mech_share_narrow_2007  -0.109403   0.180437 -0.606322  0.54448 
-binearly:harvested_acres_2007   -0.000014   0.000251 -0.055136  0.95604 
-binlate:harvested_acres_2007    -0.000012   0.000252 -0.049290  0.96070 
-binpre:harvested_acres_2007     -0.000013   0.000252 -0.050647  0.95962 
-... 2 variables were removed because of collinearity
-(specialty_share_2007:binpre and binpre:mech_share_narrow_2007)
+                               Estimate Std. Error   t value Pr(>|t|)    
+bin::early:dose               -0.027764   0.013998 -1.983432 0.047662 *  
+bin::late:dose                -0.056480   0.042609 -1.325556 0.185366    
+specialty_share_2007:binearly -0.162164   0.192765 -0.841250 0.400460    
+specialty_share_2007:binlate   0.093906   0.129939  0.722694 0.470080    
+... 1 variable was removed because of collinearity (specialty_share_2007:binpre)
 ---
 Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
-RMSE: 0.757304     Adj. R2: 0.110361
-                 Within R2: 0.005875
+RMSE: 0.733369     Adj. R2: 0.178376
+                 Within R2: 0.002276
