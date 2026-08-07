@@ -431,7 +431,7 @@ ggsave(file.path(FIGS_DIR, "het_dose_fig.png"), het_dose_fig,
 # specify outcome variable, controls, and event window to estimate both binned and full es
 ## specify config ##---------------------------------------------------------------------------------
 # outcome variable to test 
-OUTCOME_VAR <- "hired_workers_per_acre"
+OUTCOME_VAR <- "mech_labor_share"
 
 # control variables e.g. c("specialty_share", "irrigated_acres"). Leave as character(0) for none. 
 CONTROL_VARS <- character(0)
@@ -440,8 +440,7 @@ CONTROL_VARS <- character(0)
 # control for cross-farm time-variant heterogeneity: a FIXED pre-treatment snapshot of each variable
 BASELINE_CONTROL_VARS <- c( "specialty_share")
 
-# event-study window (event_time values outside this range are dropped from Model 1 only;
-# Model 2's bins use the full, unwindowed data). Edit this pair to widen/narrow the window.
+# event-study window (event_time values outside this range are dropped
 EVENT_WINDOW <- c(-5, 5)
 
 OUTPUT_DIR <- "output"
