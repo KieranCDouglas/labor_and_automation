@@ -12,11 +12,13 @@ install.packages("tidyverse")
 install.packages("tidycensus")
 install.packages("fixest")
 install.packages("broom")
+install.packages("triplediff")
 
 library(tidyverse)
 library(tidycensus)
 library(fixest)
 library(broom)
+library(triplediff)
 
 ####################################################################################################
 ### load data ###
@@ -61,6 +63,7 @@ expenditures_clean <- expenditures |>
   mutate(
     county = str_to_title(county),
     labor_share = (labor_hired_exp+labor_contract_exp)/total_exp,
+    log_labor_share = log((labor_hired_exp+labor_contract_exp)/total_exp),
     mech_share_broad = (fuel_total_exp+repairs_exp+utilities_exp+machinery_rent_exp+depreciation_exp)/total_exp,
     mech_share_narrow = (machinery_rent_exp+fuel_total_exp+repairs_exp)/total_exp,
     # fuel-excluded mechanization measures: fuel is by far the most price-volatile component of
@@ -131,12 +134,20 @@ county_pop <- get_decennial(
   group_by(state, county) |>
   summarise(population = sum(population), .groups = "drop")
 
-# baseline (pre-SC) foreign-born population share, used as a control for the confound where exposure_pooled
-# is mechanically higher in counties with a larger existing immigrant population (more people who can be
-# flagged once SC's fingerprint-sharing exists)
+# baseline (pre-SC) foreign-born and noncitizen population shares from the 2005-2009 pooled ACS.
+# foreign_born_share is used as a control for the confound where exposure_pooled is mechanically
+# higher in counties with a larger existing immigrant population (more people who can be flagged
+# once SC's fingerprint-sharing exists). noncitizen_share is the sharper enforcement-exposure
+# measure (foreign-born includes naturalized citizens, who face no removal risk) and is the
+# candidate third-difference partition for the DDD models. Note the 2005-2009 window overlaps the
+# earliest SC activations (late 2008+); the fully pre-treatment alternative is the 2000 SF3.
 county_foreign_born <- get_acs(
   geography = "county",
-  variables = c(total_pop = "B05002_001", foreign_born = "B05002_013"),
+  variables = c(
+    total_pop    = "B05002_001",   # place-of-birth universe (total population)
+    foreign_born = "B05002_013",
+    noncitizen   = "B05001_006"    # "Not a U.S. citizen"; universe matches B05002_001
+  ),
   year      = 2009,
   survey    = "acs5"
 ) |>
@@ -150,8 +161,11 @@ county_foreign_born <- get_acs(
   group_by(state, county, variable) |>
   summarise(estimate = sum(estimate, na.rm = TRUE), .groups = "drop") |>
   pivot_wider(names_from = variable, values_from = estimate) |>
-  mutate(foreign_born_share_2009 = foreign_born / total_pop) |>
-  select(state, county, foreign_born_share_2009)
+  mutate(
+    foreign_born_share_2009 = foreign_born / total_pop,
+    noncitizen_share_2009   = noncitizen / total_pop
+  ) |>
+  select(state, county, foreign_born_share_2009, noncitizen_share_2009)
 
 # generate pooled exposure intensity scores using 2 and 3, treating midpoint population as fixed (2010).
 # restricted to rows attributable to SC specifically: a genuine detainer, or a CAP Local Incarceration
@@ -305,9 +319,9 @@ farms_landvalue_controls <- farms_landvalue |>
 sc_county <- sc_activation_clean |>
   left_join(county_exposure_pooled, by = c("state", "county")) |>
   mutate(
-    treated         = as.integer(first_detainer_year <= 2011),
-    early_activator = as.integer(first_detainer_year <= 2010),
-    late_activator  = as.integer(first_detainer_year == 2011)
+    treated         = as.integer(first_detainer_year <2011),
+    early_activator = as.integer(first_detainer_year <= 2011),
+    late_activator  = as.integer(first_detainer_year > 2011)
   ) |>
   select(state, county, first_detainer_year, exposure_pooled, treated, early_activator, late_activator)
 
@@ -350,7 +364,9 @@ main <- expenditures_clean |>
     harvested_acres_safe     = na_if(harvested_acres, 0),
     total_farms_safe         = na_if(total_farms, 0),
     hired_workers_per_acre   = hired_workers    / harvested_acres_safe,
+    log_hired_workers_per_acre   = log(hired_workers    / harvested_acres_safe),
     hired_labor_exp_per_acre = hired_labor_exp  / harvested_acres_safe,
+    log_hired_labor_exp_per_acre = log(hired_labor_exp  / harvested_acres_safe),
     migrant_farm_share       = migrant_farms    / total_farms_safe,
     mech_labor_share = mech_share_broad / hired_labor_exp
   ) |>
@@ -425,6 +441,165 @@ het_dose_fig <- ggplot(
 ggsave(file.path(FIGS_DIR, "het_dose_fig.png"), het_dose_fig,
        width = 10, height = 7, dpi = 300)
 
+# pretrends with mech share 
+pretrend_fig <- main |>
+  filter(!is.na(mech_share_broad)) |>
+  ggplot(aes(
+    x = year, y = mech_share_narrow,
+    color = factor(early_activator, labels = c("Late activator (2011+)", "Early activator (<2011)"))
+  )) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
+  stat_summary(fun = mean, geom = "point", size = 2) +
+  geom_vline(xintercept = 2008, linetype = "dashed", color = "black") +
+  scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
+    scale_color_manual(values = c("#7CA982", "#243E36")) +
+  theme_minimal() +
+  labs(color = NULL, x = "Year", y = "Mechanization Share of Expenditures", title = "Mechanization Share of Expenditures Over Year by Activation Timing")
+print(pretrend_fig)
+
+# pretreds with log_hired_workers_per_acre
+pretrend_labor <- main |>
+  filter(!is.na(log_hired_workers_per_acre)) |>
+  ggplot(aes(
+    x = year, y = log_hired_workers_per_acre,
+    color = factor(early_activator, labels = c("Late activator (2011+)", "Early activator (<2011)"))
+  )) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
+  stat_summary(fun = mean, geom = "point", size = 2) +
+  geom_vline(xintercept = 2008, linetype = "dashed", color = "black") +
+  scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
+  scale_color_manual(values = c("#7CA982", "#243E36")) +
+  theme_minimal() +
+  labs(color = NULL, x = "Year", y = "Log Hired Workers Per Acre", title = "Log Hired Workers Per Acre Over Year by Activation Timing")
+print(pretrend_labor)
+
+# pretrends with log_hired_labor_exp_per_acre 
+pretrend_hired <- main |>
+  filter(!is.na(log_hired_labor_exp_per_acre)) |>
+  ggplot(aes(
+    x = year, y = log_hired_labor_exp_per_acre,
+    color = factor(early_activator, labels = c("Late activator (2011+)", "Early activator (<2011)"))
+  )) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
+  stat_summary(fun = mean, geom = "point", size = 2) +
+  geom_vline(xintercept = 2008, linetype = "dashed", color = "black") +
+  scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
+    scale_color_manual(values = c("#7CA982", "#243E36")) +
+  theme_minimal() +
+  labs(color = NULL, x = "Year", y = "Log Hired Labor Expenditures Per Acre", title = "Log Hired Labor Expenditures Per Acre Over Year by Activation Timing")
+print(pretrend_hired)
+
+####################################################################################################
+### ES per period ###
+####################################################################################################
+# this runs an es-style did for each of the three periods: pre, interim, and post
+# compares early to late activated counties to understand how program duration affects outcomes
+# first difs are between pre and post period for early and late activations while second are difs
+# between those two. for now, we ignore exposure intensity heterogeneity and endogeneity of regressors. 
+# early is defined at pre 2012 and late is defined at post 2012 rollout. 
+
+## starting off with log_hired_labor_exp_per_acre as the outcome variable
+# first model looks at pre trends between early versus late rollout counties
+pre_mod1 <- feols(
+  log_hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2002) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2002, 2007)),
+  cluster = ~county
+)
+summary(pre_mod1)
+
+# second model looks at interim trends between early versus late rollout counties
+int_mod1 <- feols(
+  log_hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2007) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2007, 2012)),
+  cluster = ~county
+)
+summary(int_mod1)
+
+# third model looks at longer-run differences between early versus late rollout counties
+lr_mod1 <- feols(
+  log_hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2012) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2012, 2017)),
+  cluster = ~county
+)
+summary(lr_mod1)
+# combine coefficients
+etable(pre_mod1, int_mod1, lr_mod1)
+
+## now looking at log_hired_workers_per_acre
+# first model looks at pre trends between early versus late rollout counties
+pre_mod2 <- feols(
+  log_hired_workers_per_acre ~ early_activator * i(year, ref = 2002) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2002, 2007)),
+  cluster = ~county
+)
+summary(pre_mod2)
+
+# second model looks at interim trends between early versus late rollout counties
+int_mod2 <- feols(
+  log_hired_workers_per_acre ~ early_activator * i(year, ref = 2007) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2007, 2012)),
+  cluster = ~county
+)
+summary(int_mod2)
+
+# third model looks at longer-run differences between early versus late rollout counties
+lr_mod2 <- feols(
+  log_hired_workers_per_acre ~ early_activator * i(year, ref = 2012) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2012, 2017)),
+  cluster = ~county
+)
+summary(lr_mod2)
+# combine coefficients
+etable(pre_mod2, int_mod2, lr_mod2)
+
+## finally looking at log(mech_share_narrow)
+# first model looks at pre trends between early versus late rollout counties
+pre_mod3 <- feols(
+  mech_share_narrow ~ early_activator * i(year, ref = 2002) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2002, 2007)),
+  cluster = ~county
+)
+summary(pre_mod3)
+
+# second model looks at interim trends between early versus late rollout counties
+int_mod3 <- feols(
+  mech_share_narrow ~ early_activator * i(year, ref = 2007) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2007, 2012)),
+  cluster = ~county
+)
+summary(int_mod3)
+
+# third model looks at longer-run differences between early versus late rollout counties
+lr_mod3 <- feols(
+  mech_share_narrow ~ early_activator * i(year, ref = 2012) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2012, 2017)),
+  cluster = ~county
+)
+summary(lr_mod3)
+
+# fourth model looks at 2007 to 2017 differences between early versus late rollout counties
+final_mod4 <- feols(
+  mech_share_narrow ~ early_activator * i(year, ref = 2007) | county + state^year,
+  data = main |> 
+    filter(year %in% c(2007, 2017)),
+  cluster = ~county
+)
+summary(final_mod4)
+
+# combine coefficients
+etable(pre_mod3, int_mod3, lr_mod3, final_mod4)
+
+# all table
+etable(pre_mod1, int_mod1, lr_mod1, pre_mod2, int_mod2, lr_mod2,pre_mod3, int_mod3, lr_mod3, final_mod4)
 ####################################################################################################
 ### triple differences ###
 ####################################################################################################
@@ -432,3 +607,59 @@ ggsave(file.path(FIGS_DIR, "het_dose_fig.png"), het_dose_fig,
 # the idea here is that we can measure the change in pre versus post sc activation differences in 
 # mechanization and labor by some third characteristic like crop mix or baseline ACS-estimated migrant pop
 # in counties that have vs have not activated. 
+# this model comes in the following form: δ_DDD = δ_GST = [((y_111-y_101)-(y_011-y_001))-((y_110-y_100)-(y_010-y_000))]
+# where G is the treatment/control group, S is the third dim partition, and T is the time window.
+
+# starting with ptrends for DDD justification i will make a few plots
+# define the third dif cohorts: what could plausibly involve differential treatment effects across early and late treated groups?
+# 
+main <- main |>
+  group_by(state, county) |>
+  mutate(
+    migrant_base = mean(migrant_farms_hired[year %in% c(2002, 2007)], na.rm = TRUE),
+    migrant_bin  = as.integer(migrant_base >= 9)
+  ) |>
+  ungroup()
+
+# the cells that actually identify the DDD term
+main |> distinct(state, county, early_activator, migrant_bin) |>
+  count(early_activator, migrant_bin)
+
+# alternative partition: baseline noncitizen population share (2005-2009 pooled ACS, joined above).
+# time-invariant per county, so the median is taken across distinct counties, not county-year rows.
+noncit_median <- main |>
+  distinct(state, county, noncitizen_share_2009) |>
+  pull(noncitizen_share_2009) |>
+  median(na.rm = TRUE)
+
+main <- main |>
+  mutate(high_noncitizen = as.integer(noncitizen_share_2009 >= noncit_median))
+
+# same cell diagnostic for the noncitizen partition
+main |> distinct(state, county, early_activator, high_noncitizen) |>
+  count(early_activator, high_noncitizen)
+
+
+
+
+
+
+
+df_2yr <- main |> filter(year %in% c(2007, 2017))
+
+att_2period <- ddd(
+  yname   = "mech_share_narrow",
+  tname   = "year",
+  idname  = "county_fips",
+  gname   = "activation_year",     # positive = treated cohort's activation year, 0/Inf = never-treated
+  pname   = "high_labor_share",    # your third dimension
+  xformla = ~1,                     # or add covariates, e.g. ~ farm_size + crop_mix
+  data    = df_2yr,
+  control_group = "nevertreated",
+  est_method    = "dr",
+  boot    = TRUE,
+  nboot   = 500,
+  cluster = "county_fips"
+)
+
+summary(att_2period)
