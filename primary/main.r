@@ -135,12 +135,6 @@ county_pop <- get_decennial(
   summarise(population = sum(population), .groups = "drop")
 
 # baseline (pre-SC) foreign-born and noncitizen population shares from the 2005-2009 pooled ACS.
-# foreign_born_share is used as a control for the confound where exposure_pooled is mechanically
-# higher in counties with a larger existing immigrant population (more people who can be flagged
-# once SC's fingerprint-sharing exists). noncitizen_share is the sharper enforcement-exposure
-# measure (foreign-born includes naturalized citizens, who face no removal risk) and is the
-# candidate third-difference partition for the DDD models. Note the 2005-2009 window overlaps the
-# earliest SC activations (late 2008+); the fully pre-treatment alternative is the 2000 SF3.
 county_foreign_born <- get_acs(
   geography = "county",
   variables = c(
@@ -616,29 +610,88 @@ etable(pre_mod1, int_mod1, lr_mod1, pre_mod2, int_mod2, lr_mod2,pre_mod3, int_mo
 main <- main |>
   group_by(state, county) |>
   mutate(
-    migrant_base = mean(migrant_farms_hired[year %in% c(2002, 2007)], na.rm = TRUE),
-    migrant_bin  = as.integer(migrant_base >= 9)
+    noncit_base = mean(noncitizen_share_2009, na.rm = TRUE),
+    noncit_bin  = as.integer(noncit_base >= 0.01)
   ) |>
   ungroup()
 
 # the cells that actually identify the DDD term
-main |> distinct(state, county, early_activator, migrant_bin) |>
-  count(early_activator, migrant_bin)
+main |> distinct(state, county, early_activator, noncit_bin) |>
+  count(early_activator, noncit_bin)
 
-# alternative partition: baseline noncitizen population share (2005-2009 pooled ACS, joined above).
-# time-invariant per county, so the median is taken across distinct counties, not county-year rows.
-noncit_median <- main |>
-  distinct(state, county, noncitizen_share_2009) |>
-  pull(noncitizen_share_2009) |>
-  median(na.rm = TRUE)
 
-main <- main |>
-  mutate(high_noncitizen = as.integer(noncitizen_share_2009 >= noncit_median))
+median(main$noncitizen_share_2009, na.rm = TRUE)
 
-# same cell diagnostic for the noncitizen partition
-main |> distinct(state, county, early_activator, high_noncitizen) |>
-  count(early_activator, high_noncitizen)
+## make some graphics to visualize the ptrends for the new partition
+# DDD pretrends with mech share 
+ddd_pretrend_fig <- main |>
+  filter(!is.na(mech_share_narrow), !is.na(noncit_bin)) |>
+  ggplot(aes(
+    x = year, y = mech_share_narrow,
+    color = factor(early_activator, levels = c(0, 1),
+                   labels = c("Late activator (2011+)", "Early activator (<2011)")),
+    linetype = factor(noncit_bin, levels = c(1, 0),
+                      labels = c("High noncitizen share", "Low noncitizen share"))
+  )) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
+  stat_summary(fun = mean, geom = "point", size = 2) +
+  geom_vline(xintercept = 2008, linetype = "dotted", color = "black") +
+  scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
+  scale_color_manual(values = c("#4F8A5B", "#243E36")) +
+  theme_minimal() +
+  labs(
+    color = NULL, linetype = NULL,
+    x = "Year", y = "Mechanization Share of Expenditures",
+    title = "Mechanization Share by Activation Timing and Baseline Noncitizen Share"
+  )
+print(ddd_pretrend_fig)
 
+
+# DDD pretreds with log_hired_workers_per_acre
+ddd_pretrend_labor <- main |>
+  filter(!is.na(log_hired_workers_per_acre), !is.na(noncit_bin)) |>
+  ggplot(aes(
+    x = year, y = log_hired_workers_per_acre,
+    color = factor(early_activator, levels = c(0, 1),
+                   labels = c("Late activator (2011+)", "Early activator (<2011)")),
+    linetype = factor(noncit_bin, levels = c(1, 0),
+                      labels = c("High noncitizen share", "Low noncitizen share"))
+  )) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
+  stat_summary(fun = mean, geom = "point", size = 2) +
+  geom_vline(xintercept = 2008, linetype = "dotted", color = "black") +
+  scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
+  scale_color_manual(values = c("#4F8A5B", "#243E36")) +
+  theme_minimal() +
+  labs(
+    color = NULL, linetype = NULL,
+    x = "Year", y = "Log Hired Workers Per Acre",
+    title = "Log Hired Workers Per Acre Over Year by Activation Timing"
+  )
+print(ddd_pretrend_labor)
+
+# DDD pretrends with log_hired_labor_exp_per_acre 
+ddd_pretrend_hired <- main |>
+  filter(!is.na(log_hired_labor_exp_per_acre), !is.na(noncit_bin)) |>
+  ggplot(aes(
+    x = year, y = log_hired_labor_exp_per_acre,
+    color = factor(early_activator, levels = c(0, 1),
+                   labels = c("Late activator (2011+)", "Early activator (<2011)")),
+    linetype = factor(noncit_bin, levels = c(1, 0),
+                      labels = c("High noncitizen share", "Low noncitizen share"))
+  )) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
+  stat_summary(fun = mean, geom = "point", size = 2) +
+  geom_vline(xintercept = 2008, linetype = "dotted", color = "black") +
+  scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
+  scale_color_manual(values = c("#4F8A5B", "#243E36")) +
+  theme_minimal() +
+  labs(
+    color = NULL, linetype = NULL,
+    x = "Year", y = "Log Hired Labor Expenditures Per Acre",
+    title = "Log Hired Labor Expenditures Per Acre Over Year by Activation Timing"
+  )
+print(ddd_pretrend_hired)
 
 
 
