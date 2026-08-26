@@ -164,14 +164,11 @@ county_foreign_born <- get_acs(
   select(state, county, foreign_born_share_2009, noncitizen_share_2009, foreign_born_count_2009, noncitizen_count_2009)
 
 # generate pooled exposure intensity scores using 2 and 3, treating midpoint population as fixed (2010).
-# restricted to rows attributable to SC specifically: a genuine detainer, or a CAP Local Incarceration
-# apprehension (SC's fingerprint screening still applies at local jail booking even when the match
-# never rose to a formal detainer). Excludes CAP Federal/State Incarceration (screened independent of
-# county SC activation), 287(g) (a legally distinct partnership program), and border/non-custodial/other
-# pathways that never go through local jail booking (see issues.txt).
 county_exposure_pooled <- sc_trac_clean |>
-  filter(year >= 2008, year <= 2013,
-         !is.na(detainer_date) | apprehension_method == "CAP Local Incarceration") |>
+  filter(year >= 2008, year <= 2013
+         # TEMP: SC-attributable restriction muted to test all apprehension methods
+         # , !is.na(detainer_date) | apprehension_method == "CAP Local Incarceration"
+         ) |>
   group_by(state, county) |>
   summarise(cases = n(), .groups = "drop") |>
   left_join(county_pop, by = c("state", "county")) |>
@@ -180,7 +177,10 @@ county_exposure_pooled <- sc_trac_clean |>
 
 # generate seperate yearly exposure intensity scores using 2 and 3; same SC-attributable restriction.
 county_exposure_yr <- sc_trac_clean |>
-  filter(!is.na(year), (!is.na(detainer_date) | apprehension_method == "CAP Local Incarceration")) |>
+  filter(!is.na(year)
+         # TEMP: SC-attributable restriction muted to test all apprehension methods
+         # , (!is.na(detainer_date) | apprehension_method == "CAP Local Incarceration")
+         ) |>
   group_by(state, county, year) |>
   summarise(cases = n(), .groups = "drop") |>
   left_join(county_pop, by = c("state", "county")) |>
@@ -384,8 +384,10 @@ sc_detainer_rate_yearly <- county_pop |>
   cross_join(tibble(year = 2008:2017)) |>
   left_join(
     sc_trac_clean |>
-      filter(year >= 2008, year <= 2017,
-             !is.na(detainer_date) | apprehension_method == "CAP Local Incarceration") |>
+      filter(year >= 2008, year <= 2017
+             # TEMP: SC-attributable restriction muted to test all apprehension methods
+             # , !is.na(detainer_date) | apprehension_method == "CAP Local Incarceration"
+             ) |>
       group_by(state, county, year) |>
       summarise(cases = n(), .groups = "drop"),
     by = c("state", "county", "year")
@@ -488,6 +490,33 @@ pretrend_hired <- main |>
   theme_minimal() +
   labs(color = NULL, x = "Year", y = "Log Hired Labor Expenditures Per Acre", title = "Log Hired Labor Expenditures Per Acre Over Year by Activation Timing")
 print(pretrend_hired)
+
+# time path of detentions broken down by early/late exposure and high/low exposure
+noncit_split <- county_foreign_born |>
+  transmute(state, county, noncit_bin = as.integer(noncitizen_share_2009 >= 0.01))
+
+ddd_pretrend_detainer <- sc_detainer_rate_yearly |>
+  left_join(sc_county |> select(state, county, early_activator), by = c("state", "county")) |>
+  left_join(noncit_split, by = c("state", "county")) |>
+  filter(!is.na(early_activator), !is.na(noncit_bin), year <= 2015) |>
+  ggplot(aes(
+    x = year, y = detainer_rate,
+    color = factor(early_activator, levels = c(0, 1),
+                   labels = c("Late activator (2011+)", "Early activator (<2011)")),
+    linetype = factor(noncit_bin, levels = c(1, 0),
+                      labels = c("High noncitizen share", "Low noncitizen share"))
+  )) +
+  stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
+  stat_summary(fun = mean, geom = "point", size = 2) +
+  geom_vline(xintercept = 2008, linetype = "dotted", color = "black") +
+  scale_color_manual(values = c("#4F8A5B", "#243E36")) +
+  theme_minimal() +
+  labs(
+    color = NULL, linetype = NULL,
+    x = "Year", y = "Detainers Issued Per 10,000 Population",
+    title = "SC Detainer Rate Over Time by Activation Timing and Noncitizen Share"
+  )
+print(ddd_pretrend_detainer)
 
 ####################################################################################################
 ### ES per period ###
