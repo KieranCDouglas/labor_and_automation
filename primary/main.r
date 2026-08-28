@@ -1,6 +1,6 @@
 ####################################################################################################
 ## main script for data cleaning and analysis
-## last edited: 08/01/2026
+## last edited: 08/27/2026
 ## by kieran
 ####################################################################################################
 
@@ -39,7 +39,7 @@ harvested_by_farmsize <- read.csv("/Users/kieran/Documents/GitHub/labor_and_auto
 ####################################################################################################
 
 ## 1. census data ##--------------------------------------------------------------------------------
-# data are renamed for clarity and consistency. necesarry variables are selected and mutations convert to workable format. new variables generated as mechanization proxies.
+# variables are selected/named plus mutations convert to workable format. new variables generated as mechanization proxies.
 expenditures_clean <- expenditures |> 
   rename(
     state = state_alpha,
@@ -66,11 +66,6 @@ expenditures_clean <- expenditures |>
     log_labor_share = log((labor_hired_exp+labor_contract_exp)/total_exp),
     mech_share_broad = (fuel_total_exp+repairs_exp+utilities_exp+machinery_rent_exp+depreciation_exp)/total_exp,
     mech_share_narrow = (machinery_rent_exp+fuel_total_exp+repairs_exp)/total_exp,
-    # fuel-excluded mechanization measures: fuel is by far the most price-volatile component of
-    # mech_share (tracks the oil price cycle almost exactly, per issues.txt-style investigation), so a
-    # farm's mech_share can swing a lot purely from commodity price movements rather than any real change
-    # in how much machinery/capital it's actually using. These strip fuel out entirely, leaving a measure
-    # closer to real mechanization intensity.
     mech_share_nofuel       = (machinery_rent_exp+repairs_exp)/total_exp,
     mech_share_nofuel_broad = (machinery_rent_exp+repairs_exp+depreciation_exp)/total_exp,
     customwork_exp = as.numeric(customwork_exp),
@@ -87,7 +82,7 @@ expenditures_clean <- expenditures |>
     )
 
 ## 2. secure communities data from TRAC ##----------------------------------------------------------
-# several variables are renamed for clarity and consistency. necesarry variables are selected, and mutations convert data into usable format. new variables are generated as exposure-intensity scores.
+# exposure-intensity measures generated, plus dating consistency and formatting 
 sc_trac_clean <- sc_trac |>
   rename(
     sex = gender,
@@ -114,7 +109,17 @@ sc_trac_clean <- sc_trac |>
     apprehension_method = as.factor(apprehension_method),
     prior_removal = as.integer(prior_removal == "YES"),
     year   = year(coalesce(detainer_date, departed_date)),
-    county = str_remove(county, " Borough$")
+    county = str_to_title(str_remove(county, " Borough$")),
+    county = str_replace(county, "^Saint ", "St. "),
+    county = str_replace(county, "^Sainte ", "Ste. "),
+    county = if_else(county %in% c("Carson City", "Charles City", "James City"),
+      county, str_remove(county, " City$")),
+    community_channel = !apprehension_method %in% c(
+      "CAP Federal Incarceration", "CAP State Incarceration", "Criminal Alien Program",
+      "Patrol Border", "Patrol Interior", "Boat Patrol", "Anti-Smuggling",
+      "Inspections", "Traffic Check", "Transportation Check Bus",
+      "Transportation Check Freight Train", "Transportation Check Aircraft",
+      "Transportation Check Passenger Train")
   )
 
 ## 3. population rates data ##----------------------------------------------------------------------
@@ -134,13 +139,13 @@ county_pop <- get_decennial(
   group_by(state, county) |>
   summarise(population = sum(population), .groups = "drop")
 
-# baseline (pre-SC) foreign-born and noncitizen population shares from the 2005-2009 pooled ACS.
+# baseline foreign-born and noncitizen population shares from the 2005-2009 pooled ACS.
 county_foreign_born <- get_acs(
   geography = "county",
   variables = c(
-    total_pop    = "B05002_001",   # place-of-birth universe (total population)
+    total_pop    = "B05002_001",  
     foreign_born = "B05002_013",
-    noncitizen   = "B05001_006"    # "Not a U.S. citizen"; universe matches B05002_001
+    noncitizen   = "B05001_006"   
   ),
   year      = 2009,
   survey    = "acs5"
@@ -165,37 +170,32 @@ county_foreign_born <- get_acs(
 
 # generate pooled exposure intensity scores using 2 and 3, treating midpoint population as fixed (2010).
 county_exposure_pooled <- sc_trac_clean |>
-  filter(year >= 2008, year <= 2013
-         # TEMP: SC-attributable restriction muted to test all apprehension methods
-         # , !is.na(detainer_date) | apprehension_method == "CAP Local Incarceration"
-         ) |>
+  filter(year >= 2008, year <= 2013, community_channel) |>
   group_by(state, county) |>
   summarise(cases = n(), .groups = "drop") |>
   left_join(county_pop, by = c("state", "county")) |>
   mutate(exposure_pooled = cases / population * 10000) |>
   select(state, county, exposure_pooled)
 
-# generate seperate yearly exposure intensity scores using 2 and 3; same SC-attributable restriction.
+# generate seperate yearly exposure intensity scores using 2 and 3
 county_exposure_yr <- sc_trac_clean |>
-  filter(!is.na(year)
-         # TEMP: SC-attributable restriction muted to test all apprehension methods
-         # , (!is.na(detainer_date) | apprehension_method == "CAP Local Incarceration")
-         ) |>
+  filter(!is.na(year), community_channel) |>
   group_by(state, county, year) |>
   summarise(cases = n(), .groups = "drop") |>
   left_join(county_pop, by = c("state", "county")) |>
   mutate(exposure_yr = cases / population * 10000) |>
   select(state, county, year, exposure_yr)
 
-# adds pooled and yearly exposure intensity variables to sc_trac_clean df
+# add pooled and yearly exposure intensity variables to sc_trac_clean df
 sc_trac_clean <- sc_trac_clean |>
   left_join(county_exposure_pooled, by = c("state", "county")) |>
   left_join(county_exposure_yr,     by = c("state", "county", "year"))
 
 ## 4. crop type and land use controls ##------------------------------------------------------------
-# collects county-level crop type and land use data, cleans, and generates share vars
+# collect county-level crop type and land use data, cleans, and generates share vars
 specialty_groups <- c("VEGETABLES", "FRUIT & TREE NUTS", "HORTICULTURE")
 
+# crops
 crop_controls <- crops |>
   mutate(
     county = str_to_title(county_name),
@@ -209,6 +209,7 @@ crop_controls <- crops |>
   ) |>
   mutate(specialty_share = specialty_acres / (specialty_acres + field_crop_acres))
 
+# land use
 landuse_controls <- landuse |>
   mutate(
     county = str_to_title(county_name),
@@ -224,7 +225,7 @@ landuse_controls <- landuse |>
   mutate(irrigated_share = irrigated_acres / total_ag_acres)
 
 ## 5. secure communities activation dates ##--------------------------------------------------------
-# ICE's official county-level SC activation roster
+# official county-level SC activation schedule fro ICE
 sc_activation_clean <- sc_ice |>
   mutate(
     county = str_remove(county, " County$| Parish$| Borough$| Census Area$| city$"),
@@ -237,6 +238,7 @@ sc_activation_clean <- sc_ice |>
 # provides indicator for agricultural counties, defined as the union of two criteria:
 #   (a) ERS earnings/employment flag: ≥20% of labor earnings or ≥17% of jobs from ag
 #   (b) farmland acreage share: ≥20% of county land area in farms as of 2002 (pre-SC baseline)
+# ****currently reworking this
 ers_ag_flag <- ag_typology |>
   filter(Farming_2015_Update == 1) |>
   transmute(
@@ -245,8 +247,8 @@ ers_ag_flag <- ag_typology |>
     county = str_to_title(county)
   )
 
-# farmland_share NA (not 0) when AG LAND ACRES is missing for a county in 2002, so
-# disclosure-suppressed counties aren't misclassified as having no farmland.
+# farmland_share NA when AG LAND ACRES is missing for a county in 2002, so
+# counties aren't misclassified as having no farmland.
 farmland_share_2002 <- landuse |>
   filter(year == 2002) |>
   mutate(
@@ -265,7 +267,7 @@ farmland_share_2002 <- landuse |>
   select(state, county, farmland_share_2002)
 
 acreage_ag_flag <- farmland_share_2002 |>
-  filter(farmland_share_2002 >= 0.20) |>
+  filter(farmland_share_2002 >= 0.01) |>
   select(state, county)
 
 ag_counties <- bind_rows(ers_ag_flag, acreage_ag_flag) |>
@@ -296,7 +298,7 @@ hired_labor_controls <- hired_labor |>
   mutate(migrant_farms = migrant_farms_hired + migrant_farms_contract)
 
 # cleans farm count and asset value, needed here for total_farms
-# denominator for migrant_farm_share below (migrant_farms is a count of farms, so it's normalized as a
+# denominator for migrant_farm_share (migrant_farms is a count of farms, so it's normalized as a
 # share of all farms, not per acre).
 farms_landvalue_controls <- farms_landvalue |>
   mutate(
@@ -343,8 +345,8 @@ main <- expenditures_clean |>
       TRUE                    ~ NA_integer_
     ),
     # exposure_pooled NA -> 0: county_exposure_pooled only contains counties with at least one
-    # SC-attributable case in 2008-2013 (see its construction above), so NA here is a structural zero
-    # (verified: zero qualifying cases), not missing data - safe to fill, unlike the ag-census-derived
+    # community-channel SC removal in 2008-2013 (see its construction above), so NA is a structural zero
+    # (no recorded removals), not missing data - safe to fill, unlike the ag-census-derived
     # covariates below, whose NAs mean "USDA didn't report this county-year" (genuinely unknown, not zero).
     exposure_pooled = replace_na(exposure_pooled, 0)
   ) |>
@@ -376,18 +378,15 @@ main <- expenditures_clean |>
 ### event study justification ###
 ####################################################################################################
 ## secure communities-related exposure intensity over time ##---------------------------------------
-# state, county, year (2008-2017) panel of SC-attributable detainers per 10,000 population 
-# SC-attributable restriction as county_exposure_pooled/county_exposure_yr above. 
+# state, county, year (2008-2017) panel of community-channel SC removals per 10,000 population.
+# community-channel counting as county_exposure_pooled/county_exposure_yr above. 
 sc_detainer_rate_yearly <- county_pop |>
   distinct(state, county, population) |>
   semi_join(ag_counties, by = c("state", "county")) |>
   cross_join(tibble(year = 2008:2017)) |>
   left_join(
     sc_trac_clean |>
-      filter(year >= 2008, year <= 2017
-             # TEMP: SC-attributable restriction muted to test all apprehension methods
-             # , !is.na(detainer_date) | apprehension_method == "CAP Local Incarceration"
-             ) |>
+      filter(year >= 2008, year <= 2017, community_channel) |>
       group_by(state, county, year) |>
       summarise(cases = n(), .groups = "drop"),
     by = c("state", "county", "year")
@@ -404,6 +403,7 @@ sc_detainer_rate_filtered <- sc_detainer_rate_yearly |>
   filter(sum(detainer_rate > 0) >= 2) |>
   ungroup()
 
+# define quartiles as under count of hired workers per acre to differentiate high versus low labor dependence 
 worker_quartiles <- main |>
   filter(year == 2007) |>
   distinct(state, county, hired_workers_per_acre)
@@ -425,10 +425,10 @@ detainer_plot_data <- sc_detainer_rate_filtered |>
 county_gradient_palette <- colorRampPalette(c("#7CA982", "#E0EEC6", "#f4a259", "#243E36", "#bc4b51"))(
   n_distinct(detainer_plot_data$state)
 )
-
+# directory for figures
 FIGS_DIR <- "/Users/kieran/Documents/GitHub/labor_and_automation/figs/primary"
 
-# create figure
+# create figure showing heterogeneity of detainer rate by county between hired worker per acre quartiles
 het_dose_fig <- ggplot(
   data = detainer_plot_data,
   aes(x = year, y = detainer_rate, color = state, group = interaction(state, county))) +
@@ -437,12 +437,13 @@ het_dose_fig <- ggplot(
   scale_color_manual(values = county_gradient_palette) +
   theme_minimal() +
   theme(legend.position = "none") +
-  labs(title = "SC Detainer Rate Over Time Per County (By Hired-Worker-Per-Acre Quartile)",
-      y = "Detainers Issued Per 10,000 Population", x = "Year") +
+  labs(title = "Community-Channel SC Removal Rate Over Time Per County (By Hired-Worker-Per-Acre Quartile)",
+      y = "Community-Channel SC Removals Per 10,000 Population", x = "Year") +
   ylim(0,18)
 ggsave(file.path(FIGS_DIR, "het_dose_fig.png"), het_dose_fig,
        width = 10, height = 7, dpi = 300)
 
+## now to visualize some very basic pretrends between early versus late activation ##---------------------------------------
 # pretrends with mech share 
 pretrend_fig <- main |>
   filter(!is.na(mech_share_broad)) |>
@@ -459,11 +460,11 @@ pretrend_fig <- main |>
   labs(color = NULL, x = "Year", y = "Mechanization Share of Expenditures", title = "Mechanization Share of Expenditures Over Year by Activation Timing")
 print(pretrend_fig)
 
-# pretreds with log_hired_workers_per_acre
+# pretreds with hired_workers_per_acre
 pretrend_labor <- main |>
-  filter(!is.na(log_hired_workers_per_acre)) |>
+  filter(!is.na(hired_workers_per_acre)) |>
   ggplot(aes(
-    x = year, y = log_hired_workers_per_acre,
+    x = year, y = hired_workers_per_acre,
     color = factor(early_activator, labels = c("Late activator (2011+)", "Early activator (<2011)"))
   )) +
   stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
@@ -472,14 +473,14 @@ pretrend_labor <- main |>
   scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
   scale_color_manual(values = c("#7CA982", "#243E36")) +
   theme_minimal() +
-  labs(color = NULL, x = "Year", y = "Log Hired Workers Per Acre", title = "Log Hired Workers Per Acre Over Year by Activation Timing")
+  labs(color = NULL, x = "Year", y = "Hired Workers Per Acre", title = "Hired Workers Per Acre Over Year by Activation Timing")
 print(pretrend_labor)
 
-# pretrends with log_hired_labor_exp_per_acre 
+# pretrends with hired_labor_exp_per_acre 
 pretrend_hired <- main |>
-  filter(!is.na(log_hired_labor_exp_per_acre)) |>
+  filter(!is.na(hired_labor_exp_per_acre)) |>
   ggplot(aes(
-    x = year, y = log_hired_labor_exp_per_acre,
+    x = year, y = hired_labor_exp_per_acre,
     color = factor(early_activator, labels = c("Late activator (2011+)", "Early activator (<2011)"))
   )) +
   stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
@@ -488,10 +489,11 @@ pretrend_hired <- main |>
   scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
     scale_color_manual(values = c("#7CA982", "#243E36")) +
   theme_minimal() +
-  labs(color = NULL, x = "Year", y = "Log Hired Labor Expenditures Per Acre", title = "Log Hired Labor Expenditures Per Acre Over Year by Activation Timing")
+  labs(color = NULL, x = "Year", y = "Hired Labor Expenditures Per Acre", title = "Hired Labor Expenditures Per Acre Over Year by Activation Timing")
 print(pretrend_hired)
 
-# time path of detentions broken down by early/late exposure and high/low exposure
+## removals over time per subgroup ##---------------------------------------
+# time path of detentions broken down by early/late exposure and high/low noncit share
 noncit_split <- county_foreign_born |>
   transmute(state, county, noncit_bin = as.integer(noncitizen_share_2009 >= 0.01))
 
@@ -513,10 +515,110 @@ ddd_pretrend_detainer <- sc_detainer_rate_yearly |>
   theme_minimal() +
   labs(
     color = NULL, linetype = NULL,
-    x = "Year", y = "Detainers Issued Per 10,000 Population",
-    title = "SC Detainer Rate Over Time by Activation Timing and Noncitizen Share"
+    x = "Year", y = "Community-Channel SC Removals Per 10,000 Population",
+    title = "Community-Channel SC Removal Rate Over Time by Activation Timing and Noncitizen Share"
   )
 print(ddd_pretrend_detainer)
+
+# ES of detentions path broken down by early/late exposure and high/low noncit share 
+# same four-way split in event time: removal rate relative to each county's own activation year
+# we want to include error bars so the first step is to fit an es regression and pull its coefficients
+es_group_data <- sc_detainer_rate_yearly |>
+  left_join(sc_county |> select(state, county, early_activator, first_detainer_year),
+            by = c("state", "county")) |>
+  left_join(noncit_split, by = c("state", "county")) |>
+  filter(!is.na(early_activator), !is.na(noncit_bin), year <= 2015) |>
+  mutate(
+    rel_year = year - first_detainer_year,
+    county_id = paste(state, county, sep = ", ")
+  ) |>
+  filter(rel_year >= -4, rel_year <= 4)
+# define groups of interest and fit individual models per group
+group_defs <- list(
+  "Late activator (2011+) / High noncitizen share (>1% pop.)" = list(early = 0, noncit = 1),
+  "Late activator (2011+) / Low noncitizen share (≤1% pop.)"  = list(early = 0, noncit = 0),
+  "Early activator (<2011) / High noncitizen share (>1% pop.)" = list(early = 1, noncit = 1),
+  "Early activator (<2011) / Low noncitizen share (≤1% pop.)"  = list(early = 1, noncit = 0)
+)
+es_cellmeans <- group_defs |>
+  map(\(g) es_group_data |> filter(early_activator == g$early, noncit_bin == g$noncit)) |>
+  map(\(d) feols(detainer_rate ~ 0 + factor(rel_year), data = d, cluster = ~county_id)) |>
+  map(\(mod) tidy(mod, conf.int = TRUE, conf.level = 0.95)) |>
+  bind_rows(.id = "group") |>
+  mutate(rel_year = as.integer(str_extract(term, "-?\\d+$"))) |>
+  separate(group, into = c("activation_label", "noncit_label"), sep = " / ")
+# plot those model outputs 
+ggplot(es_cellmeans, aes(x = rel_year, y = estimate,
+                          color = activation_label, linetype = noncit_label,
+                          fill = activation_label,
+                          group = interaction(activation_label, noncit_label))) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.15, color = NA) +
+  geom_line(linewidth = 0.6) +
+  geom_point(size = 2) +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "black") +
+  scale_x_continuous(breaks = -4:4) +
+  scale_color_manual(values = c("#4F8A5B", "#243E36")) +
+  scale_fill_manual(values = c("#4F8A5B", "#243E36")) +
+  theme_minimal() +
+  labs(color = NULL, linetype = NULL, fill = NULL,
+       x = "Years Relative to SC Activation", y = "SC Removals Per 10,000 Population",
+       title = "SC Removals Schedule Relative to Activation Year")
+
+# county-level impact of SC on detentions by type 
+# **** waiting for full deportations schedule to get a sense of substitution
+apprehension_groups <- sc_trac_clean |>
+  filter(apprehension_method != "") |>
+  mutate(apprehension_group = case_when(
+    apprehension_method == "CAP Local Incarceration" ~ "CAP Local Incarceration",
+    apprehension_method %in% c("CAP Federal Incarceration", "CAP State Incarceration",
+                                "Criminal Alien Program") ~ "CAP Federal/State",
+    apprehension_method == "287(g) Program" ~ "287(g) Program",
+    apprehension_method %in% c("Patrol Border", "Patrol Interior", "Boat Patrol",
+                                "Anti-Smuggling") ~ "Border/Patrol",
+    apprehension_method %in% c("Located", "Non-Custodial Arrest", "ERO Reprocessed Arrest",
+                                "Law Enforcement Agency Response Unit", "Other Task Force",
+                                "Worksite Enforcement", "Probation and Parole",
+                                "Organized Crime Drug Enforcement Tas",
+                                "Organized Crime Drug Enforcement Task Force") ~ "Field/Task-Force Arrest",
+    apprehension_method %in% c("Inspections", "Traffic Check", "Transportation Check Bus",
+                                "Transportation Check Freight Train", "Transportation Check Aircraft",
+                                "Transportation Check Passenger Train") ~ "Checks/Inspections",
+    TRUE ~ "Other/Admin"
+  ))
+
+apprehension_type_panel <- county_pop |>
+  distinct(state, county, population) |>
+  semi_join(ag_counties, by = c("state", "county")) |>
+  left_join(sc_county |> select(state, county, first_detainer_year), by = c("state", "county")) |>
+  filter(!is.na(first_detainer_year)) |>
+  cross_join(tibble(year = 2008:2015)) |>
+  cross_join(distinct(apprehension_groups, apprehension_group)) |>
+  left_join(
+    apprehension_groups |>
+      filter(year >= 2008, year <= 2015) |>
+      group_by(state, county, year, apprehension_group) |>
+      summarise(cases = n(), .groups = "drop"),
+    by = c("state", "county", "year", "apprehension_group")
+  ) |>
+  mutate(
+    cases    = replace_na(cases, 0),
+    rate     = cases / population * 10000,
+    rel_year = year - first_detainer_year
+  ) |>
+  filter(rel_year >= -5, rel_year <= 5)
+
+apprehension_type_fig <- apprehension_type_panel |>
+  ggplot(aes(x = rel_year, y = rate)) +
+  stat_summary(fun = function(x) mean(x > 0), geom = "bar", fill = "#243E36") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#bc4b51") +
+  facet_wrap(~apprehension_group) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal() +
+  labs(
+    x = "Years Relative to County SC Activation", y = "Share of Counties With Any Recorded Case",
+    title = "Detentions Around SC Activation, by Apprehension Method"
+  )
+print(apprehension_type_fig)
 
 ####################################################################################################
 ### ES per period ###
@@ -530,7 +632,7 @@ print(ddd_pretrend_detainer)
 ## starting off with log_hired_labor_exp_per_acre as the outcome variable
 # first model looks at pre trends between early versus late rollout counties
 pre_mod1 <- feols(
-  log_hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2002) | county_id + state^year,
+  hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2002) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2002, 2007)),
   cluster = ~county_id
@@ -539,7 +641,7 @@ summary(pre_mod1)
 
 # second model looks at interim trends between early versus late rollout counties
 int_mod1 <- feols(
-  log_hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2007) | county_id + state^year,
+  hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2007) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2007, 2012)),
   cluster = ~county_id
@@ -548,7 +650,7 @@ summary(int_mod1)
 
 # third model looks at longer-run differences between early versus late rollout counties
 lr_mod1 <- feols(
-  log_hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2012) | county_id + state^year,
+  hired_labor_exp_per_acre ~ early_activator * i(year, ref = 2012) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2012, 2017)),
   cluster = ~county_id
@@ -557,10 +659,10 @@ summary(lr_mod1)
 # combine coefficients
 etable(pre_mod1, int_mod1, lr_mod1)
 
-## now looking at log_hired_workers_per_acre
+## now looking at hired_workers_per_acre
 # first model looks at pre trends between early versus late rollout counties
 pre_mod2 <- feols(
-  log_hired_workers_per_acre ~ early_activator * i(year, ref = 2002) | county_id + state^year,
+  hired_workers_per_acre ~ early_activator * i(year, ref = 2002) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2002, 2007)),
   cluster = ~county_id
@@ -569,7 +671,7 @@ summary(pre_mod2)
 
 # second model looks at interim trends between early versus late rollout counties
 int_mod2 <- feols(
-  log_hired_workers_per_acre ~ early_activator * i(year, ref = 2007) | county_id + state^year,
+  hired_workers_per_acre ~ early_activator * i(year, ref = 2007) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2007, 2012)),
   cluster = ~county_id
@@ -578,7 +680,7 @@ summary(int_mod2)
 
 # third model looks at longer-run differences between early versus late rollout counties
 lr_mod2 <- feols(
-  log_hired_workers_per_acre ~ early_activator * i(year, ref = 2012) | county_id + state^year,
+  hired_workers_per_acre ~ early_activator * i(year, ref = 2012) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2012, 2017)),
   cluster = ~county_id
@@ -587,10 +689,10 @@ summary(lr_mod2)
 # combine coefficients
 etable(pre_mod2, int_mod2, lr_mod2)
 
-## finally looking at log(mech_share_narrow)
+## finally looking at mech_share_broad
 # first model looks at pre trends between early versus late rollout counties
 pre_mod3 <- feols(
-  mech_share_narrow ~ early_activator * i(year, ref = 2002) | county_id + state^year,
+  mech_share_broad ~ early_activator * i(year, ref = 2002) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2002, 2007)),
   cluster = ~county_id
@@ -599,7 +701,7 @@ summary(pre_mod3)
 
 # second model looks at interim trends between early versus late rollout counties
 int_mod3 <- feols(
-  mech_share_narrow ~ early_activator * i(year, ref = 2007) | county_id + state^year,
+  mech_share_broad ~ early_activator * i(year, ref = 2007) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2007, 2012)),
   cluster = ~county_id
@@ -608,7 +710,7 @@ summary(int_mod3)
 
 # third model looks at longer-run differences between early versus late rollout counties
 lr_mod3 <- feols(
-  mech_share_narrow ~ early_activator * i(year, ref = 2012) | county_id + state^year,
+  mech_share_broad ~ early_activator * i(year, ref = 2012) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2012, 2017)),
   cluster = ~county_id
@@ -617,7 +719,7 @@ summary(lr_mod3)
 
 # fourth model looks at 2007 to 2017 differences between early versus late rollout counties
 final_mod4 <- feols(
-  mech_share_narrow ~ early_activator * i(year, ref = 2007) | county_id + state^year,
+  mech_share_broad ~ early_activator * i(year, ref = 2007) | county_id + state^year,
   data = main |> 
     filter(year %in% c(2007, 2017)),
   cluster = ~county_id
@@ -640,33 +742,33 @@ etable(pre_mod1, int_mod1, lr_mod1, pre_mod2, int_mod2, lr_mod2,pre_mod3, int_mo
 # is absorbed by county FE and the year main effects by state^year FE.
 
 es_full1 <- feols(
-  log_hired_labor_exp_per_acre ~ i(year, early_activator, ref = 2007) | county_id + state^year,
+  hired_labor_exp_per_acre ~ i(year, early_activator, ref = 2007) | county_id + state^year,
   data = main,
   cluster = ~county_id
 )
 summary(es_full1)
 
 es_full2 <- feols(
-  log_hired_workers_per_acre ~ i(year, early_activator, ref = 2007) | county_id + state^year,
+  hired_workers_per_acre ~ i(year, early_activator, ref = 2007) | county_id + state^year,
   data = main,
   cluster = ~county_id
 )
 summary(es_full2)
 
 es_full3 <- feols(
-  mech_share_narrow ~ i(year, early_activator, ref = 2007) | county_id + state^year,
+  mech_share_broad ~ i(year, early_activator, ref = 2007) | county_id + state^year,
   data = main,
   cluster = ~county_id
 )
 summary(es_full3)
 
 # combine coeffs
-etable(es_full1, es_full2, es_full3)
+etable(es_full1, es_full2, es_full3, tex = TRUE)
 
 # plot point estimates and 95% CIs for the year-specific coefficients
 es_plot_data <- list(
-  "Log Hired Labor Exp Per Acre" = es_full1,
-  "Log Hired Workers Per Acre"   = es_full2,
+  "Hired Labor Exp Per Acre" = es_full1,
+  "Hired Workers Per Acre"   = es_full2,
   "Mechanization Share" = es_full3
 ) |>
   map(\(mod) tidy(mod, conf.int = TRUE, conf.level = 0.95)) |>
@@ -674,7 +776,7 @@ es_plot_data <- list(
   mutate(year = as.integer(str_extract(term, "\\d{4}"))) |>
   bind_rows(
     expand_grid(
-      outcome = c("Log Hired Labor Exp Per Acre", "Log Hired Workers Per Acre",
+      outcome = c("Hired Labor Exp Per Acre", "Hired Workers Per Acre",
                   "Mechanization Share"),
       year = 2007, estimate = 0, conf.low = 0, conf.high = 0
     )
@@ -695,7 +797,7 @@ es_full_fig <- ggplot(es_plot_data, aes(x = year, y = estimate)) +
 print(es_full_fig)
 
 ####################################################################################################
-### triple differences ###
+### ddd justification ###
 ####################################################################################################
 # the idea here is that we can measure the change in pre versus post sc activation differences in 
 # mechanization and labor by some third characteristic like crop mix or baseline ACS-estimated migrant pop
@@ -716,30 +818,30 @@ main <- main |>
   group_by(state, county) |>
   mutate(
     noncit_base = mean(noncitizen_share_2009, na.rm = TRUE),
-    noncit_bin  = as.integer(noncit_base >= 0.01, na.rm = TRUE),
+    noncit_bin  = as.integer(noncit_base >= 0.015, na.rm = TRUE),
     noncit_count_base = mean(noncitizen_count_2009, na.rm = TRUE),
-    noncit_count_bin = as.integer(noncit_count_base >= 103, na.rm = TRUE),
+    noncit_count_bin = as.integer(noncit_count_base >= 100, na.rm = TRUE),
     foreign_born_share_base = mean(foreign_born_share_2009, na.rm = TRUE),
-    foreign_born_share_bin  = as.integer(foreign_born_share_base >= 0.011, na.rm = TRUE),
+    foreign_born_share_bin  = as.integer(foreign_born_share_base >= 0.02, na.rm = TRUE),
     foreign_born_count_base = mean(foreign_born_count_2009, na.rm = TRUE),
-    foreign_born_count_bin = as.integer(foreign_born_count_base >= 169, na.rm = TRUE)
+    foreign_born_count_bin = as.integer(foreign_born_count_base >= 400, na.rm = TRUE)
   ) |>
   ungroup()
 
-# the cells that actually identify the DDD term
+# the cells that actually identify the DDD term. tweak previous thresholds to balance groups.
 main |> distinct(state, county, early_activator, noncit_bin) |>
   count(early_activator, noncit_bin)
 main |> distinct(state, county, early_activator, noncit_count_bin) |>
   count(early_activator, noncit_count_bin)
-main |> distinct(state, county, early_activator, foreign_born_share_bin) |>
-  count(early_activator, foreign_born_share_bin)
+main |> distinct(state, county, early_activator, foreign_born_count_bin) |>
+  count(early_activator, foreign_born_count_bin)
 
 ## make some graphics to visualize the ptrends for the new partition for noncit_bin
 # DDD pretrends with mech share 
 ddd_pretrend_fig <- main |>
-  filter(!is.na(mech_share_narrow), !is.na(noncit_bin)) |>
+  filter(!is.na(mech_share_broad), !is.na(noncit_bin)) |>
   ggplot(aes(
-    x = year, y = mech_share_narrow,
+    x = year, y = mech_share_broad,
     color = factor(early_activator, levels = c(0, 1),
                    labels = c("Late activator (2011+)", "Early activator (<2011)")),
     linetype = factor(noncit_bin, levels = c(1, 0),
@@ -759,11 +861,11 @@ ddd_pretrend_fig <- main |>
 print(ddd_pretrend_fig)
 
 
-# DDD pretreds with log_hired_workers_per_acre
+# DDD pretreds with hired_workers_per_acre
 ddd_pretrend_labor <- main |>
-  filter(!is.na(log_hired_workers_per_acre), !is.na(noncit_bin)) |>
+  filter(!is.na(hired_workers_per_acre), !is.na(noncit_bin)) |>
   ggplot(aes(
-    x = year, y = log_hired_workers_per_acre,
+    x = year, y = hired_workers_per_acre,
     color = factor(early_activator, levels = c(0, 1),
                    labels = c("Late activator (2011+)", "Early activator (<2011)")),
     linetype = factor(noncit_bin, levels = c(1, 0),
@@ -777,16 +879,16 @@ ddd_pretrend_labor <- main |>
   theme_minimal() +
   labs(
     color = NULL, linetype = NULL,
-    x = "Year", y = "Log Hired Workers Per Acre",
-    title = "Log Hired Workers Per Acre Over Year by Activation Timing"
+    x = "Year", y = "Hired Workers Per Acre",
+    title = "Hired Workers Per Acre Over Year by Activation Timing"
   )
 print(ddd_pretrend_labor)
 
 # DDD pretrends with log_hired_labor_exp_per_acre 
 ddd_pretrend_hired <- main |>
-  filter(!is.na(log_hired_labor_exp_per_acre), !is.na(noncit_bin)) |>
+  filter(!is.na(hired_labor_exp_per_acre), !is.na(noncit_bin)) |>
   ggplot(aes(
-    x = year, y = log_hired_labor_exp_per_acre,
+    x = year, y = hired_labor_exp_per_acre,
     color = factor(early_activator, levels = c(0, 1),
                    labels = c("Late activator (2011+)", "Early activator (<2011)")),
     linetype = factor(noncit_bin, levels = c(1, 0),
@@ -800,7 +902,7 @@ ddd_pretrend_hired <- main |>
   theme_minimal() +
   labs(
     color = NULL, linetype = NULL,
-    x = "Year", y = "Log Hired Labor Expenditures Per Acre",
+    x = "Year", y = "Hired Labor Expenditures Per Acre",
     title = "Log Hired Labor Expenditures Per Acre Over Year by Activation Timing"
   )
 print(ddd_pretrend_hired)
@@ -816,7 +918,7 @@ main <- main |>
   mutate(early_x_high = early_activator * noncit_bin)
 
 ddd_mod1 <- feols(
-  log_hired_labor_exp_per_acre ~ i(year, early_x_high, ref = 2007) +
+  hired_labor_exp_per_acre ~ i(year, early_x_high, ref = 2007) +
     i(year, early_activator, ref = 2007) + i(year, noncit_bin, ref = 2007) | county_id + year,
   data = main,
   cluster = ~county_id
@@ -824,7 +926,7 @@ ddd_mod1 <- feols(
 summary(ddd_mod1)
 
 ddd_mod2 <- feols(
-  log_hired_workers_per_acre ~ i(year, early_x_high, ref = 2007) +
+  hired_workers_per_acre ~ i(year, early_x_high, ref = 2007) +
     i(year, early_activator, ref = 2007) + i(year, noncit_bin, ref = 2007) | county_id + year,
   data = main,
   cluster = ~county_id
@@ -832,7 +934,7 @@ ddd_mod2 <- feols(
 summary(ddd_mod2)
 
 ddd_mod3 <- feols(
-  mech_share_narrow ~ i(year, early_x_high, ref = 2007) +
+  mech_share_broad ~ i(year, early_x_high, ref = 2007) +
     i(year, early_activator, ref = 2007) + i(year, noncit_bin, ref = 2007) | county_id + year,
   data = main,
   cluster = ~county_id
@@ -840,16 +942,16 @@ ddd_mod3 <- feols(
 summary(ddd_mod3)
 
 # combine coefficients, county-clustered
-etable(ddd_mod1, ddd_mod2, ddd_mod3)
+etable(ddd_mod1, ddd_mod2, ddd_mod3, tex = TRUE)
 # with state^year FE gone, activation timing varies mostly at the state level, so also show
 # state-clustered SEs (35 clusters) as the conservative benchmark
 etable(ddd_mod1, ddd_mod2, ddd_mod3, cluster = ~state)
 
 # plot triple-interaction coefficients with 95% CIs
 ddd_plot_data <- list(
-  "Log Hired Labor Exp Per Acre" = ddd_mod1,
-  "Log Hired Workers Per Acre"   = ddd_mod2,
-  "Mechanization Share (Narrow)" = ddd_mod3
+  "Hired Labor Exp Per Acre" = ddd_mod1,
+  "Hired Workers Per Acre"   = ddd_mod2,
+  "Mechanization Share" = ddd_mod3
 ) |>
   map(\(mod) tidy(mod, conf.int = TRUE, conf.level = 0.95)) |>
   bind_rows(.id = "outcome") |>
@@ -857,8 +959,8 @@ ddd_plot_data <- list(
   mutate(year = as.integer(str_extract(term, "\\d{4}"))) |>
   bind_rows(
     expand_grid(
-      outcome = c("Log Hired Labor Exp Per Acre", "Log Hired Workers Per Acre",
-                  "Mechanization Share (Narrow)"),
+      outcome = c("Hired Labor Exp Per Acre", "Hired Workers Per Acre",
+                  "Mechanization Share"),
       year = 2007, estimate = 0, conf.low = 0, conf.high = 0
     )
   )
@@ -866,7 +968,7 @@ ddd_plot_data <- list(
 ddd_fig <- ggplot(ddd_plot_data, aes(x = year, y = estimate)) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
   geom_vline(xintercept = 2008, linetype = "dashed", color = "black") +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.6, color = "#243E36") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.6, color = "#4F8A5B") +
   geom_point(size = 2, color = "#243E36") +
   facet_wrap(~outcome, scales = "free_y") +
   scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
