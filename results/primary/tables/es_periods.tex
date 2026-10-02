@@ -1,0 +1,33 @@
+
+\begingroup
+\centering
+\begin{tabular}{lcccccccccc}
+   \tabularnewline \midrule \midrule
+   Dependent Variables: & \multicolumn{3}{c}{hired\_labor\_exp\_per\_acre} & \multicolumn{3}{c}{hired\_workers\_per\_acre} & \multicolumn{4}{c}{mech\_share\_broad}\\
+   Model:                                    & (1)                   & (2)                   & (3)     & (4)                  & (5)                   & (6)                   & (7)                   & (8)      & (9)      & (10)\\  
+   \midrule
+   \emph{Variables}\\
+   early\_activator                          & -79.58                & -207.7                & 339.3   & -0.0270              & -0.0307               & 0.0318                & -0.0005               & -0.0020  & -0.0020  & -0.0020\\   
+                                             & (406.1)               & (181.0)               & (313.2) & (0.0847)             & (0.0290)              & (0.0286)              & (0.0032)              & (0.0027) & (0.0020) & (0.0031)\\   
+   early\_activator $\times$ year $=$ 2007   & 159.2                 &                       &         & 0.0540               &                       &                       & 0.0010                &          &          &   \\   
+                                             & (812.1)               &                       &         & (0.1694)             &                       &                       & (0.0064)              &          &          &   \\   
+   early\_activator $\times$ year $=$ 2012   &                       & 415.4                 &         &                      & 0.0614                &                       &                       & 0.0041   &          &   \\   
+                                             &                       & (362.0)               &         &                      & (0.0580)              &                       &                       & (0.0054) &          &   \\   
+   early\_activator $\times$ year $=$ 2017   &                       &                       & -678.6  &                      &                       & -0.0637               &                       &          & 0.0040   & 0.0040\\   
+                                             &                       &                       & (626.4) &                      &                       & (0.0572)              &                       &          & (0.0039) & (0.0063)\\   
+   \midrule
+   \emph{Fixed-effects}\\
+   county\_id                                & Yes                   & Yes                   & Yes     & Yes                  & Yes                   & Yes                   & Yes                   & Yes      & Yes      & Yes\\  
+   state-year                                & Yes                   & Yes                   & Yes     & Yes                  & Yes                   & Yes                   & Yes                   & Yes      & Yes      & Yes\\  
+   \midrule
+   \emph{Fit statistics}\\
+   Observations                              & 3,528                 & 3,796                 & 3,814   & 3,558                & 3,830                 & 3,840                 & 3,826                 & 3,852    & 3,934    & 3,894\\  
+   R$^2$                                     & 0.61749               & 0.58219               & 0.59827 & 0.65841              & 0.59904               & 0.55575               & 0.90241               & 0.92562  & 0.92564  & 0.91229\\  
+   Within R$^2$                              & $1.04\times 10^{-5}$  & $6.31\times 10^{-5}$  & 0.00018 & $6.3\times 10^{-5}$  & $8.23\times 10^{-5}$  & $8.95\times 10^{-5}$  & $1.42\times 10^{-5}$  & 0.00033  & 0.00037  & 0.00025\\  
+   \midrule \midrule
+   \multicolumn{11}{l}{\emph{Clustered (county\_id) standard-errors in parentheses}}\\
+   \multicolumn{11}{l}{\emph{Signif. Codes: ***: 0.01, **: 0.05, *: 0.1}}\\
+\end{tabular}
+\par\endgroup
+
+

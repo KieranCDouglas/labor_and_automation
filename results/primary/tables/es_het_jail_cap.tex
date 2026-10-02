@@ -1,0 +1,32 @@
+
+\begingroup
+\centering
+\begin{tabular}{lccc}
+   \tabularnewline \midrule \midrule
+   Dependent Variables:                     & hired\_labor\_exp\_per\_acre     & hired\_workers\_per\_acre    & mech\_share\_broad\\    
+                                            & Hired Labor Exp Per Acre         & Hired Workers Per Acre       & Mechanization Share \\   
+   Model:                                   & (1)                              & (2)                          & (3)\\  
+   \midrule
+   \emph{Variables}\\
+   het\_jail\_cap $\times$ year $=$ 2002    & -92.24                           & 0.0602                       & -0.0046\\   
+                                            & (531.0)                          & (0.0752)                     & (0.0028)\\   
+   het\_jail\_cap $\times$ year $=$ 2012    & 110.4                            & 0.0289                       & 0.0043$^{*}$\\   
+                                            & (429.6)                          & (0.0518)                     & (0.0025)\\   
+   het\_jail\_cap $\times$ year $=$ 2017    & 15.22                            & 0.0299                       & -0.0001\\   
+                                            & (125.0)                          & (0.0250)                     & (0.0029)\\   
+   \midrule
+   \emph{Fixed-effects}\\
+   county\_id                               & Yes                              & Yes                          & Yes\\  
+   state-year                               & Yes                              & Yes                          & Yes\\  
+   \midrule
+   \emph{Fit statistics}\\
+   Observations                             & 6,746                            & 6,779                        & 6,868\\  
+   R$^2$                                    & 0.49281                          & 0.55901                      & 0.85417\\  
+   Within R$^2$                             & $2.78\times 10^{-5}$             & 0.00015                      & 0.00203\\  
+   \midrule \midrule
+   \multicolumn{4}{l}{\emph{Clustered (county\_id) standard-errors in parentheses}}\\
+   \multicolumn{4}{l}{\emph{Signif. Codes: ***: 0.01, **: 0.05, *: 0.1}}\\
+\end{tabular}
+\par\endgroup
+
+

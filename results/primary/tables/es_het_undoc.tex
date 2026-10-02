@@ -1,0 +1,32 @@
+
+\begingroup
+\centering
+\begin{tabular}{lccc}
+   \tabularnewline \midrule \midrule
+   Dependent Variables:                & hired\_labor\_exp\_per\_acre     & hired\_workers\_per\_acre    & mech\_share\_broad\\    
+                                       & Hired Labor Exp Per Acre         & Hired Workers Per Acre       & Mechanization Share \\   
+   Model:                              & (1)                              & (2)                          & (3)\\  
+   \midrule
+   \emph{Variables}\\
+   het\_undoc $\times$ year $=$ 2002   & 331.9                            & -0.0091                      & 0.0032\\   
+                                       & (295.1)                          & (0.0566)                     & (0.0030)\\   
+   het\_undoc $\times$ year $=$ 2012   & -373.2                           & -0.0286                      & 0.0062$^{**}$\\   
+                                       & (358.7)                          & (0.0384)                     & (0.0026)\\   
+   het\_undoc $\times$ year $=$ 2017   & -6.186                           & $6.61\times 10^{-5}$         & 0.0046\\   
+                                       & (84.19)                          & (0.0087)                     & (0.0029)\\   
+   \midrule
+   \emph{Fixed-effects}\\
+   county\_id                          & Yes                              & Yes                          & Yes\\  
+   state-year                          & Yes                              & Yes                          & Yes\\  
+   \midrule
+   \emph{Fit statistics}\\
+   Observations                        & 7,964                            & 8,001                        & 8,093\\  
+   R$^2$                               & 0.50471                          & 0.55826                      & 0.85685\\  
+   Within R$^2$                        & 0.00028                          & $3.86\times 10^{-5}$         & 0.00079\\  
+   \midrule \midrule
+   \multicolumn{4}{l}{\emph{Clustered (county\_id) standard-errors in parentheses}}\\
+   \multicolumn{4}{l}{\emph{Signif. Codes: ***: 0.01, **: 0.05, *: 0.1}}\\
+\end{tabular}
+\par\endgroup
+
+

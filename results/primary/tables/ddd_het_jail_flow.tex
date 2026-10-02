@@ -1,0 +1,44 @@
+
+\begingroup
+\centering
+\begin{tabular}{lccc}
+   \tabularnewline \midrule \midrule
+   Dependent Variables:                                  & hired\_labor\_exp\_per\_acre     & hired\_workers\_per\_acre    & mech\_share\_broad\\    
+                                                         & Hired Labor Exp Per Acre         & Hired Workers Per Acre       & Mechanization Share \\   
+   Model:                                                & (1)                              & (2)                          & (3)\\  
+   \midrule
+   \emph{Variables}\\
+   early\_x\_het\_jail\_flow $\times$ year $=$ 2002      & 934.1                            & 0.1498                       & 0.0021\\   
+                                                         & (874.9)                          & (0.1332)                     & (0.0058)\\   
+   early\_x\_het\_jail\_flow $\times$ year $=$ 2012      & 1,749.2$^{**}$                   & 0.2241$^{**}$                & 0.0085$^{*}$\\   
+                                                         & (807.2)                          & (0.1091)                     & (0.0048)\\   
+   early\_x\_het\_jail\_flow $\times$ year $=$ 2017      & 153.6                            & 0.0485                       & 0.0027\\   
+                                                         & (288.5)                          & (0.0339)                     & (0.0051)\\   
+   early\_activator $\times$ year $=$ 2002               & 74.49                            & -0.0423                      & 0.0021\\   
+                                                         & (511.2)                          & (0.0650)                     & (0.0034)\\   
+   early\_activator $\times$ year $=$ 2012               & 58.67                            & -0.0032                      & -0.0009\\   
+                                                         & (295.5)                          & (0.0301)                     & (0.0029)\\   
+   early\_activator $\times$ year $=$ 2017               & -226.2                           & -0.0194                      & 0.0033\\   
+                                                         & (230.0)                          & (0.0165)                     & (0.0033)\\   
+   het\_jail\_flow $\times$ year $=$ 2002                & -93.34                           & 0.0367                       & -0.0052\\   
+                                                         & (456.8)                          & (0.0972)                     & (0.0047)\\   
+   het\_jail\_flow $\times$ year $=$ 2012                & -102.6                           & 0.0133                       & -0.0076$^{**}$\\   
+                                                         & (359.8)                          & (0.0549)                     & (0.0039)\\   
+   het\_jail\_flow $\times$ year $=$ 2017                & -131.5                           & -0.0308                      & -0.0010\\   
+                                                         & (246.8)                          & (0.0257)                     & (0.0041)\\   
+   \midrule
+   \emph{Fixed-effects}\\
+   county\_id                                            & Yes                              & Yes                          & Yes\\  
+   year                                                  & Yes                              & Yes                          & Yes\\  
+   \midrule
+   \emph{Fit statistics}\\
+   Observations                                          & 7,437                            & 7,473                        & 7,569\\  
+   R$^2$                                                 & 0.45539                          & 0.52399                      & 0.84400\\  
+   Within R$^2$                                          & 0.00350                          & 0.00381                      & 0.00179\\  
+   \midrule \midrule
+   \multicolumn{4}{l}{\emph{Clustered (county\_id) standard-errors in parentheses}}\\
+   \multicolumn{4}{l}{\emph{Signif. Codes: ***: 0.01, **: 0.05, *: 0.1}}\\
+\end{tabular}
+\par\endgroup
+
+

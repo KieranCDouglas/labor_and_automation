@@ -1,0 +1,44 @@
+
+\begingroup
+\centering
+\begin{tabular}{lccc}
+   \tabularnewline \midrule \midrule
+   Dependent Variables:                             & hired\_labor\_exp\_per\_acre     & hired\_workers\_per\_acre    & mech\_share\_broad\\    
+                                                    & Hired Labor Exp Per Acre         & Hired Workers Per Acre       & Mechanization Share \\   
+   Model:                                           & (1)                              & (2)                          & (3)\\  
+   \midrule
+   \emph{Variables}\\
+   early\_x\_het\_noncit $\times$ year $=$ 2002     & -185.2                           & -0.0605                      & 0.0039\\   
+                                                    & (943.5)                          & (0.1479)                     & (0.0090)\\   
+   early\_x\_het\_noncit $\times$ year $=$ 2012     & 1,750.1                          & 0.2134$^{*}$                 & 0.0064\\   
+                                                    & (1,074.6)                        & (0.1260)                     & (0.0075)\\   
+   early\_x\_het\_noncit $\times$ year $=$ 2017     & 320.8                            & 0.0216                       & 0.0129$^{**}$\\   
+                                                    & (246.5)                          & (0.0307)                     & (0.0058)\\   
+   early\_activator $\times$ year $=$ 2002          & 96.68                            & -0.0100                      & $1.06\times 10^{-5}$\\    
+                                                    & (354.6)                          & (0.0993)                     & (0.0066)\\   
+   early\_activator $\times$ year $=$ 2012          & -174.8                           & -0.0238                      & -0.0009\\   
+                                                    & (348.5)                          & (0.0521)                     & (0.0079)\\   
+   early\_activator $\times$ year $=$ 2017          & -244.8                           & -0.0084                      & -0.0025\\   
+                                                    & (232.5)                          & (0.0226)                     & (0.0046)\\   
+   het\_noncit $\times$ year $=$ 2002               & 2,478.5$^{***}$                  & 0.3459$^{***}$               & -0.0045\\   
+                                                    & (761.5)                          & (0.1257)                     & (0.0075)\\   
+   het\_noncit $\times$ year $=$ 2012               & 893.5                            & 0.0824                       & -0.0029\\   
+                                                    & (695.0)                          & (0.0751)                     & (0.0047)\\   
+   het\_noncit $\times$ year $=$ 2017               & -102.9                           & -0.0009                      & -0.0048\\   
+                                                    & (228.9)                          & (0.0224)                     & (0.0029)\\   
+   \midrule
+   \emph{Fixed-effects}\\
+   county\_id                                       & Yes                              & Yes                          & Yes\\  
+   year                                             & Yes                              & Yes                          & Yes\\  
+   \midrule
+   \emph{Fit statistics}\\
+   Observations                                     & 7,969                            & 8,006                        & 8,093\\  
+   R$^2$                                            & 0.46915                          & 0.52454                      & 0.84294\\  
+   Within R$^2$                                     & 0.01009                          & 0.00857                      & 0.00236\\  
+   \midrule \midrule
+   \multicolumn{4}{l}{\emph{Clustered (state) standard-errors in parentheses}}\\
+   \multicolumn{4}{l}{\emph{Signif. Codes: ***: 0.01, **: 0.05, *: 0.1}}\\
+\end{tabular}
+\par\endgroup
+
+

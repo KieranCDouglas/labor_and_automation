@@ -1,0 +1,32 @@
+
+\begingroup
+\centering
+\begin{tabular}{lccc}
+   \tabularnewline \midrule \midrule
+   Dependent Variables:                 & hired\_labor\_exp\_per\_acre     & hired\_workers\_per\_acre    & mech\_share\_broad\\    
+                                        & Hired Labor Exp Per Acre         & Hired Workers Per Acre       & Mechanization Share \\   
+   Model:                               & (1)                              & (2)                          & (3)\\  
+   \midrule
+   \emph{Variables}\\
+   het\_noncit $\times$ year $=$ 2002   & 646.8$^{*}$                      & 0.0147                       & 0.0054$^{*}$\\   
+                                        & (333.5)                          & (0.0548)                     & (0.0029)\\   
+   het\_noncit $\times$ year $=$ 2012   & 117.7                            & 0.0134                       & 0.0057$^{**}$\\   
+                                        & (219.7)                          & (0.0292)                     & (0.0026)\\   
+   het\_noncit $\times$ year $=$ 2017   & -38.81                           & -0.0029                      & 0.0034\\   
+                                        & (93.08)                          & (0.0079)                     & (0.0030)\\   
+   \midrule
+   \emph{Fixed-effects}\\
+   county\_id                           & Yes                              & Yes                          & Yes\\  
+   state-year                           & Yes                              & Yes                          & Yes\\  
+   \midrule
+   \emph{Fit statistics}\\
+   Observations                         & 7,964                            & 8,001                        & 8,093\\  
+   R$^2$                                & 0.50475                          & 0.55826                      & 0.85686\\  
+   Within R$^2$                         & 0.00037                          & $1.85\times 10^{-5}$         & 0.00086\\  
+   \midrule \midrule
+   \multicolumn{4}{l}{\emph{Clustered (county\_id) standard-errors in parentheses}}\\
+   \multicolumn{4}{l}{\emph{Signif. Codes: ***: 0.01, **: 0.05, *: 0.1}}\\
+\end{tabular}
+\par\endgroup
+
+
