@@ -351,6 +351,40 @@ pull_all_harvested_by_size <- function(years = c(2002, 2007, 2012, 2017)) {
   map(years, pull_harvested_by_size_year) |> bind_rows()
 }
 
+# --- Crop mix: labor-intensive group totals (county level) -------------------
+# one top-level row per county for each crop group, instead of the nested per-crop rows in
+# crops_area_harvested.csv (totals + components + fresh/processing + irrigated, which double count).
+# orchards are "acres bearing & non-bearing", not "area harvested", so the crops pull above misses them;
+# census orchards include vineyards, citrus and tree nuts. harvested cropland (the share denominator)
+# also counts orchard land. a single short_desc at county level is small enough to pull nationally.
+# (D) cells come back as NA; a county with no row had no operations growing that group.
+
+CROPMIX_SHORT_DESC <- c(
+  "VEGETABLE TOTALS, IN THE OPEN - ACRES HARVESTED",
+  "ORCHARDS - ACRES BEARING & NON-BEARING",
+  "AG LAND, CROPLAND, HARVESTED - ACRES"
+)
+
+pull_cropmix_year <- function(year, delay = 1) {
+  message("Pulling crop mix ", year, "...")
+  map(CROPMIX_SHORT_DESC, \(sd) {
+    Sys.sleep(delay)
+    nass_get(list(source_desc = "CENSUS", agg_level_desc = "COUNTY", domain_desc = "TOTAL",
+                  short_desc = sd, year = as.character(year))) |>
+      select(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc, Value) |>
+      rename(value = Value) |>
+      mutate(
+        year  = as.integer(year),
+        value = as.numeric(gsub(",", "", value))
+      )
+  }) |>
+    bind_rows()
+}
+
+pull_all_cropmix <- function(years = c(2002, 2007, 2012, 2017, 2022)) {
+  map(years, pull_cropmix_year) |> bind_rows()
+}
+
 # --- Run ---------------------------------------------------------------------
 # To pull all data from scratch, uncomment and run the blocks below.
 # To load functions only (e.g. for a targeted re-pull), source this file as-is.
@@ -410,3 +444,7 @@ pull_all_harvested_by_size <- function(years = c(2002, 2007, 2012, 2017)) {
 #            .keep_all = TRUE)
 # write_csv(harvested_by_size, "data/main/harvested_cropland_by_farmsize.csv")
 # message("Saved harvested cropland by farm size: ", nrow(harvested_by_size), " rows")
+
+# cropmix <- pull_all_cropmix()
+# write_csv(cropmix, "data/main/crop_mix.csv")
+# message("Saved crop mix: ", nrow(cropmix), " rows")

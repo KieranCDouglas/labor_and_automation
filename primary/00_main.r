@@ -856,62 +856,6 @@ ggplot(es_cellmeans, aes(x = rel_year, y = estimate,
        x = "Years Relative to SC Activation", y = "SC Removals Per 10,000 Population",
        title = "SC Removals Schedule Relative to Activation Year")
 
-# county-level impact of SC on detentions by type 
-# **** waiting for full deportations schedule to get a sense of substitution
-apprehension_groups <- sc_trac_clean |>
-  filter(apprehension_method != "") |>
-  mutate(apprehension_group = case_when(
-    apprehension_method == "CAP Local Incarceration" ~ "CAP Local Incarceration",
-    apprehension_method %in% c("CAP Federal Incarceration", "CAP State Incarceration",
-                                "Criminal Alien Program") ~ "CAP Federal/State",
-    apprehension_method == "287(g) Program" ~ "287(g) Program",
-    apprehension_method %in% c("Patrol Border", "Patrol Interior", "Boat Patrol",
-                                "Anti-Smuggling") ~ "Border/Patrol",
-    apprehension_method %in% c("Located", "Non-Custodial Arrest", "ERO Reprocessed Arrest",
-                                "Law Enforcement Agency Response Unit", "Other Task Force",
-                                "Worksite Enforcement", "Probation and Parole",
-                                "Organized Crime Drug Enforcement Tas",
-                                "Organized Crime Drug Enforcement Task Force") ~ "Field/Task-Force Arrest",
-    apprehension_method %in% c("Inspections", "Traffic Check", "Transportation Check Bus",
-                                "Transportation Check Freight Train", "Transportation Check Aircraft",
-                                "Transportation Check Passenger Train") ~ "Checks/Inspections",
-    TRUE ~ "Other/Admin"
-  ))
-
-apprehension_type_panel <- county_pop |>
-  distinct(state, county, population) |>
-  semi_join(ag_counties, by = c("state", "county")) |>
-  left_join(sc_county |> select(state, county, first_detainer_year), by = c("state", "county")) |>
-  filter(!is.na(first_detainer_year)) |>
-  cross_join(tibble(year = 2008:2015)) |>
-  cross_join(distinct(apprehension_groups, apprehension_group)) |>
-  left_join(
-    apprehension_groups |>
-      filter(year >= 2008, year <= 2015) |>
-      group_by(state, county, year, apprehension_group) |>
-      summarise(cases = n(), .groups = "drop"),
-    by = c("state", "county", "year", "apprehension_group")
-  ) |>
-  mutate(
-    cases    = replace_na(cases, 0),
-    rate     = cases / population * 10000,
-    rel_year = year - first_detainer_year
-  ) |>
-  filter(rel_year >= -5, rel_year <= 5)
-
-apprehension_type_fig <- apprehension_type_panel |>
-  ggplot(aes(x = rel_year, y = rate)) +
-  stat_summary(fun = function(x) mean(x > 0), geom = "bar", fill = "#243E36") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "#bc4b51") +
-  facet_wrap(~apprehension_group) +
-  scale_y_continuous(labels = scales::percent) +
-  theme_minimal() +
-  labs(
-    x = "Years Relative to County SC Activation", y = "Share of Counties With Any Recorded Case",
-    title = "Detentions Around SC Activation, by Apprehension Method"
-  )
-print(apprehension_type_fig)
-
 ####################################################################################################
 ### ES per period ###
 ####################################################################################################

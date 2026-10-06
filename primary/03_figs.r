@@ -32,24 +32,25 @@ dir.create(FIGS_DIR, showWarnings = FALSE, recursive = TRUE)
 ####################################################################################################
 
 main                    <- readRDS(file.path(CLEAN_DIR, "main.rds"))
-sc_county               <- readRDS(file.path(CLEAN_DIR, "sc_county.rds"))
-noncit_split            <- readRDS(file.path(CLEAN_DIR, "noncit_split.rds"))
-sc_detainer_rate_yearly <- readRDS(file.path(CLEAN_DIR, "sc_detainer_rate_yearly.rds"))
-apprehension_type_panel <- readRDS(file.path(CLEAN_DIR, "apprehension_type_panel.rds"))
-ag_counties             <- readRDS(file.path(CLEAN_DIR, "ag_counties.rds"))
+ag_counties            <- readRDS(file.path(CLEAN_DIR, "ag_counties.rds"))
 sc_rollout              <- readRDS(file.path(CLEAN_DIR, "sc_rollout.rds"))
 het_config              <- readRDS(file.path(CLEAN_DIR, "het_config.rds"))
 
 het_labels <- set_names(het_config$label, paste0("het_", het_config$measure))
 
 es_cellmeans <- read_csv(file.path(COEFS_DIR, "es_detainer_groups.csv"), show_col_types = FALSE)
-es_full      <- read_csv(file.path(COEFS_DIR, "es_full.csv"),            show_col_types = FALSE)
-es_het       <- read_csv(file.path(COEFS_DIR, "es_het.csv"),             show_col_types = FALSE)
-ddd_het      <- read_csv(file.path(COEFS_DIR, "ddd_het.csv"),            show_col_types = FALSE)
-es_acs       <- read_csv(file.path(COEFS_DIR, "es_acs.csv"),             show_col_types = FALSE)
-ddd_acs      <- read_csv(file.path(COEFS_DIR, "ddd_acs.csv"),            show_col_types = FALSE)
-es_acs_cz    <- read_csv(file.path(COEFS_DIR, "es_acs_cz.csv"),          show_col_types = FALSE)
-ddd_acs_cz   <- read_csv(file.path(COEFS_DIR, "ddd_acs_cz.csv"),         show_col_types = FALSE)
+es_agc       <- read_csv(file.path(COEFS_DIR, "es_agc_county.csv"),    show_col_types = FALSE)
+ddd_agc      <- read_csv(file.path(COEFS_DIR, "ddd_agc_county.csv"),   show_col_types = FALSE)
+es_acs       <- read_csv(file.path(COEFS_DIR, "es_acs_county.csv"),    show_col_types = FALSE)
+ddd_acs      <- read_csv(file.path(COEFS_DIR, "ddd_acs_county.csv"),   show_col_types = FALSE)
+es_acs_cz    <- read_csv(file.path(COEFS_DIR, "es_acs_cz.csv"),        show_col_types = FALSE)
+ddd_acs_cz   <- read_csv(file.path(COEFS_DIR, "ddd_acs_cz.csv"),       show_col_types = FALSE)
+es_qcew      <- read_csv(file.path(COEFS_DIR, "es_qcew_county.csv"),   show_col_types = FALSE)
+ddd_qcew     <- read_csv(file.path(COEFS_DIR, "ddd_qcew_county.csv"),  show_col_types = FALSE)
+es_crop      <- read_csv(file.path(COEFS_DIR, "es_crop_county.csv"),   show_col_types = FALSE)
+ddd_crop     <- read_csv(file.path(COEFS_DIR, "ddd_crop_county.csv"),  show_col_types = FALSE)
+es_crop_cz   <- read_csv(file.path(COEFS_DIR, "es_crop_cz.csv"),       show_col_types = FALSE)
+ddd_crop_cz  <- read_csv(file.path(COEFS_DIR, "ddd_crop_cz.csv"),      show_col_types = FALSE)
 
 # coefficient plots put a zero at the 2007 reference year for each outcome (and het measure, if present)
 add_ref_year <- function(coefs) {
@@ -152,77 +153,9 @@ for (yr in 2008:2013) {
 ####################################################################################################
 ### event study justification ###
 ####################################################################################################
-## secure communities-related exposure intensity over time ##---------------------------------------
-# keep counties with at least two years of nonzero removals
-sc_detainer_rate_filtered <- sc_detainer_rate_yearly |>
-  group_by(state, county) |>
-  filter(sum(detainer_rate > 0) >= 2) |>
-  ungroup()
-
-# define quartiles as under count of hired workers per acre to differentiate high versus low labor dependence
-worker_quartiles <- main |>
-  filter(year == 2007) |>
-  distinct(state, county, hired_workers_per_acre)
-worker_cutoffs <- quantile(worker_quartiles$hired_workers_per_acre, probs = c(.25, .5, .75), na.rm = TRUE)
-worker_quartiles <- worker_quartiles |>
-  mutate(worker_quartile = case_when(
-    is.na(hired_workers_per_acre)         ~ NA_character_,
-    hired_workers_per_acre <= worker_cutoffs[1] ~ "Q1 (lowest)",
-    hired_workers_per_acre <= worker_cutoffs[2] ~ "Q2",
-    hired_workers_per_acre <= worker_cutoffs[3] ~ "Q3",
-    TRUE                                         ~ "Q4 (highest)"
-  )) |>
-  select(state, county, worker_quartile)
-
-detainer_plot_data <- sc_detainer_rate_filtered |>
-  left_join(worker_quartiles, by = c("state", "county")) |>
-  filter(!is.na(worker_quartile))
-
-county_gradient_palette <- colorRampPalette(c("#7CA982", "#E0EEC6", "#f4a259", "#243E36", "#bc4b51"))(
-  n_distinct(detainer_plot_data$state)
-)
-
-# create figure showing heterogeneity of detainer rate by county between hired worker per acre quartiles
-het_dose_fig <- ggplot(
-  data = detainer_plot_data,
-  aes(x = year, y = detainer_rate, color = state, group = interaction(state, county))) +
-  geom_smooth(method = loess, weight = .5, linewidth = 0.4, se = FALSE) +
-  facet_wrap(~worker_quartile) +
-  scale_color_manual(values = county_gradient_palette) +
-  theme_minimal() +
-  theme(legend.position = "none") +
-  labs(title = "Community-Channel SC Removal Rate Over Time Per County (By Hired-Worker-Per-Acre Quartile)",
-      y = "Community-Channel SC Removals Per 10,000 Population", x = "Year") +
-  ylim(0,18)
-ggsave(file.path(FIGS_DIR, "het_dose_fig.png"), het_dose_fig,
-       width = 10, height = 7, dpi = 300)
-
-## removals over time per subgroup ##---------------------------------------------------------------
-# time path of detentions broken down by early/late exposure and high/low noncit share
-ddd_pretrend_detainer <- sc_detainer_rate_yearly |>
-  left_join(sc_county |> select(state, county, early_activator), by = c("state", "county")) |>
-  left_join(noncit_split, by = c("state", "county")) |>
-  filter(!is.na(early_activator), !is.na(noncit_bin), year <= 2015) |>
-  ggplot(aes(
-    x = year, y = detainer_rate,
-    color = factor(early_activator, levels = c(0, 1),
-                   labels = c("Late activator (2011+)", "Early activator (<2011)")),
-    linetype = factor(noncit_bin, levels = c(1, 0),
-                      labels = c("High noncitizen share", "Low noncitizen share"))
-  )) +
-  stat_summary(fun = mean, geom = "line", linewidth = 0.6) +
-  stat_summary(fun = mean, geom = "point", size = 2) +
-  geom_vline(xintercept = 2008, linetype = "dotted", color = "black") +
-  scale_color_manual(values = c("#4F8A5B", "#243E36")) +
-  theme_minimal() +
-  labs(
-    color = NULL, linetype = NULL,
-    x = "Year", y = "Community-Channel SC Removals Per 10,000 Population",
-    title = "Community-Channel SC Removal Rate Over Time by Activation Timing and Noncitizen Share"
-  )
-ggsave(file.path(FIGS_DIR, "detrate_over_time.png"), ddd_pretrend_detainer, width = 10, height = 6, dpi = 300)
-
-# same four-way split in event time, with CIs from the per-group models in 02_models.r
+## removals in event time per subgroup ##----------------------------------------------------------
+# four-way split by early/late activation and high/low noncit share, with CIs from the per-group
+# models in 02_models.r
 es_detainer_fig <- ggplot(es_cellmeans, aes(x = rel_year, y = estimate,
                           color = activation_label, linetype = noncit_label,
                           fill = activation_label,
@@ -240,25 +173,11 @@ es_detainer_fig <- ggplot(es_cellmeans, aes(x = rel_year, y = estimate,
        title = "SC Removals Schedule Relative to Activation Year")
 ggsave(file.path(FIGS_DIR, "es_detainer_groups.png"), es_detainer_fig, width = 10, height = 6, dpi = 300)
 
-# detentions around activation by apprehension type
-apprehension_type_fig <- apprehension_type_panel |>
-  ggplot(aes(x = rel_year, y = rate)) +
-  stat_summary(fun = function(x) mean(x > 0), geom = "bar", fill = "#243E36") +
-  geom_vline(xintercept = 0, linetype = "dashed", color = "#bc4b51") +
-  facet_wrap(~apprehension_group) +
-  scale_y_continuous(labels = scales::percent) +
-  theme_minimal() +
-  labs(
-    x = "Years Relative to County SC Activation", y = "Share of Counties With Any Recorded Case",
-    title = "Detentions Around SC Activation, by Apprehension Method"
-  )
-ggsave(file.path(FIGS_DIR, "apprehension_type.png"), apprehension_type_fig, width = 10, height = 7, dpi = 300)
-
 ####################################################################################################
 ### full es: year-specific treatment effects ###
 ####################################################################################################
 
-es_full_fig <- ggplot(add_ref_year(es_full), aes(x = year, y = estimate)) +
+es_agc_fig <- ggplot(add_ref_year(es_agc), aes(x = year, y = estimate)) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
   geom_vline(xintercept = 2008, linetype = "dashed", color = "black") +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.6, color = "#7CA982") +
@@ -270,37 +189,15 @@ es_full_fig <- ggplot(add_ref_year(es_full), aes(x = year, y = estimate)) +
     x = "Census Year", y = "Estimate Relative to 2007",
     title = "Year-Specific Effects of Early SC Activation (95% CI)"
   )
-ggsave(file.path(FIGS_DIR, "es_full_fig.png"), es_full_fig, width = 10, height = 5, dpi = 300)
-
-####################################################################################################
-### es by exposure heterogeneity measure ###
-####################################################################################################
-# rows are het measures, columns are outcomes: each panel is the high-vs-low year-specific effect
-
-es_het_fig <- es_het |>
-  add_ref_year() |>
-  mutate(het = factor(het_labels[het], levels = het_labels)) |>
-  ggplot(aes(x = year, y = estimate)) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
-  geom_vline(xintercept = 2008, linetype = "dashed", color = "black") +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.6, color = "#7CA982") +
-  geom_point(size = 2, color = "#243E36") +
-  facet_wrap(het ~ outcome, scales = "free_y", ncol = 3) +
-  scale_x_continuous(breaks = c(2002, 2007, 2012, 2017)) +
-  theme_minimal() +
-  labs(
-    x = "Census Year", y = "High vs Low Estimate Relative to 2007",
-    title = "Year-Specific Effects by Exposure Heterogeneity Measure (95% CI)"
-  )
-ggsave(file.path(FIGS_DIR, "es_het_fig.png"), es_het_fig, width = 10, height = 12, dpi = 300)
+ggsave(file.path(FIGS_DIR, "es_agc_county.png"), es_agc_fig, width = 10, height = 5, dpi = 300)
 
 ####################################################################################################
 ### ddd triple-interaction coefficients ###
 ####################################################################################################
 # one figure per het measure: early activation x high exposure
 
-for (h in unique(ddd_het$het)) {
-  p <- ddd_het |>
+for (h in unique(ddd_agc$het)) {
+  p <- ddd_agc |>
     filter(het == h, str_detect(term, "early_x_")) |>
     add_ref_year() |>
     ggplot(aes(x = year, y = estimate)) +
@@ -315,7 +212,7 @@ for (h in unique(ddd_het$het)) {
       x = "Census Year", y = "Triple-Difference Estimate Relative to 2007",
       title = paste0("DDD: Early Activation x High Baseline ", het_labels[[h]], " (95% CI)")
     )
-  ggsave(file.path(FIGS_DIR, paste0("ddd_", h, ".png")), p, width = 10, height = 5, dpi = 300)
+  ggsave(file.path(FIGS_DIR, paste0("ddd_agc_county_", str_remove(h, "^het_"), ".png")), p, width = 10, height = 5, dpi = 300)
 }
 
 ####################################################################################################
@@ -323,27 +220,29 @@ for (h in unique(ddd_het$het)) {
 ####################################################################################################
 # yearly coefficients relative to 2007; outcomes are ag workers as a share of 2006-07 working-age pop
 
-acs_coef_plot <- function(coefs, title) {
+# y_lab and breaks default to the ACS/QCEW yearly panels; the census-year crop panels override them
+acs_coef_plot <- function(coefs, title, y_lab = "Estimate Relative to 2007 (share of baseline working-age pop.)",
+                          breaks = scales::breaks_width(2), err_width = 0.4) {
   coefs |>
     add_ref_year() |>
     mutate(outcome = factor(outcome, levels = unique(coefs$outcome))) |>
     ggplot(aes(x = year, y = estimate)) +
     geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
     geom_vline(xintercept = 2008, linetype = "dashed", color = "black") +
-    geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.4, color = "#7CA982") +
+    geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = err_width, color = "#7CA982") +
     geom_point(size = 2, color = "#243E36") +
     facet_wrap(~outcome, scales = "free_y") +
-    scale_x_continuous(breaks = scales::breaks_width(2)) +
+    scale_x_continuous(breaks = breaks) +
     scale_y_continuous(labels = scales::label_percent(accuracy = 0.01)) +
     theme_minimal() +
-    labs(x = "Year", y = "Estimate Relative to 2007 (share of baseline working-age pop.)", title = title)
+    labs(x = "Year", y = y_lab, title = title)
 }
 
 es_acs_fig <- acs_coef_plot(es_acs, "Early SC Activation and the Ag Workforce, ACS 2006-2020 (95% CI)")
-ggsave(file.path(FIGS_DIR, "es_acs_fig.png"), es_acs_fig, width = 10, height = 7, dpi = 300)
+ggsave(file.path(FIGS_DIR, "es_acs_county.png"), es_acs_fig, width = 10, height = 7, dpi = 300)
 
 es_acs_cz_fig <- acs_coef_plot(es_acs_cz, "Early SC Activation and the Ag Workforce, Commuting Zones, ACS 2006-2020 (95% CI)")
-ggsave(file.path(FIGS_DIR, "es_acs_cz_fig.png"), es_acs_cz_fig, width = 10, height = 7, dpi = 300)
+ggsave(file.path(FIGS_DIR, "es_acs_cz.png"), es_acs_cz_fig, width = 10, height = 7, dpi = 300)
 
 for (h in unique(ddd_acs_cz$het)) {
   p <- ddd_acs_cz |>
@@ -356,7 +255,46 @@ for (h in unique(ddd_acs$het)) {
   p <- ddd_acs |>
     filter(het == h, str_detect(term, "early_x_")) |>
     acs_coef_plot(paste0("DDD: Early Activation x High Baseline ", het_labels[[h]], ", ACS 2006-2020 (95% CI)"))
-  ggsave(file.path(FIGS_DIR, paste0("ddd_acs_", str_remove(h, "^het_"), ".png")), p, width = 10, height = 7, dpi = 300)
+  ggsave(file.path(FIGS_DIR, paste0("ddd_acs_county_", str_remove(h, "^het_"), ".png")), p, width = 10, height = 7, dpi = 300)
+}
+
+####################################################################################################
+### long panel (QCEW 2005-2022): formal ag employment ###
+####################################################################################################
+# same layout and units as the ACS figures; each outcome is its own balanced county sample
+
+es_qcew_fig <- acs_coef_plot(es_qcew, "Early SC Activation and Formal Ag Employment, QCEW 2005-2022 (95% CI)")
+ggsave(file.path(FIGS_DIR, "es_qcew_county.png"), es_qcew_fig, width = 10, height = 5, dpi = 300)
+
+for (h in unique(ddd_qcew$het)) {
+  p <- ddd_qcew |>
+    filter(het == h, str_detect(term, "early_x_")) |>
+    acs_coef_plot(paste0("DDD: Early Activation x High Baseline ", het_labels[[h]], ", QCEW 2005-2022 (95% CI)"))
+  ggsave(file.path(FIGS_DIR, paste0("ddd_qcew_county_", str_remove(h, "^het_"), ".png")), p, width = 10, height = 5, dpi = 300)
+}
+
+####################################################################################################
+### crop mix (census of ag 2002-2022): labor-intensive acreage ###
+####################################################################################################
+# census years only; outcomes are shares of harvested cropland in vegetables and/or orchards
+
+crop_plot <- \(coefs, title) acs_coef_plot(coefs, title, y_lab = "Estimate Relative to 2007 (share of harvested cropland)",
+                                            breaks = c(2002, 2007, 2012, 2017, 2022), err_width = 1.2)
+
+for (geo in c("county", "cz")) {
+  geo_lab <- if (geo == "cz") "Commuting Zones" else "Counties"
+  es  <- if (geo == "cz") es_crop_cz  else es_crop
+  ddd <- if (geo == "cz") ddd_crop_cz else ddd_crop
+
+  p <- crop_plot(es, paste0("Early SC Activation and Labor-Intensive Crop Mix, ", geo_lab, ", Census of Ag 2002-2022 (95% CI)"))
+  ggsave(file.path(FIGS_DIR, paste0("es_crop_", geo, ".png")), p, width = 10, height = 5, dpi = 300)
+
+  for (h in unique(ddd$het)) {
+    p <- ddd |>
+      filter(het == h, str_detect(term, "early_x_")) |>
+      crop_plot(paste0("DDD: Early Activation x High Baseline ", het_labels[[h]], ", Crop Mix, ", geo_lab, " (95% CI)"))
+    ggsave(file.path(FIGS_DIR, paste0("ddd_crop_", geo, "_", str_remove(h, "^het_"), ".png")), p, width = 10, height = 5, dpi = 300)
+  }
 }
 
 ####################################################################################################
@@ -446,3 +384,53 @@ for (m in setdiff(het_config$measure, "early")) {
     guides(fill = guide_legend(nrow = 1, title.position = "left", title.vjust = 0.8))
   ggsave(file.path(FIGS_DIR, paste0("map_het_", m, ".png")), p, width = 14, height = 5.5, dpi = 300, bg = "white")
 }
+
+####################################################################################################
+### exploratory: dose-response DDD by exposure quantile ###
+####################################################################################################
+# reads the *_quant.csv outputs of the matching section in 02_models.r. for each run, one event-time
+# figure per het measure (each upper bin's early x bin path, relative to the bottom bin).
+# self-contained: delete this section and the matching one in 02_models.r to remove it.
+
+quant_fig_runs <- list(
+  ddd_agc_county  = list(lab = "Census of Ag, Counties", breaks = c(2002, 2007, 2012, 2017), y = "Estimate Relative to 2007", pct = FALSE),
+  ddd_acs_county  = list(lab = "ACS, Counties",          breaks = seq(2006, 2020, 2),       y = "Estimate Relative to 2007 (share of baseline working-age pop.)", pct = TRUE),
+  ddd_acs_cz      = list(lab = "ACS, Commuting Zones",   breaks = seq(2006, 2020, 2),       y = "Estimate Relative to 2007 (share of baseline working-age pop.)", pct = TRUE),
+  ddd_qcew_county = list(lab = "QCEW, Counties",         breaks = seq(2005, 2021, 4),       y = "Estimate Relative to 2007 (share of baseline working-age pop.)", pct = TRUE),
+  ddd_crop_county = list(lab = "Crop Mix, Counties",     breaks = c(2002, 2007, 2012, 2017, 2022), y = "Estimate Relative to 2007 (share of harvested cropland)", pct = TRUE),
+  ddd_crop_cz     = list(lab = "Crop Mix, Commuting Zones", breaks = c(2002, 2007, 2012, 2017, 2022), y = "Estimate Relative to 2007 (share of harvested cropland)", pct = TRUE)
+)
+
+QUANT_COLORS <- c("#B5D3A8", "#7CA982", "#243E36")  # light -> dark = low -> high upper bin
+
+# Q for quartile measures, T for tercile measures, so labels show which binning a measure used
+bin_label <- \(bin, n_bins) paste0(if_else(n_bins == 3, "T", "Q"), bin)
+
+iwalk(quant_fig_runs, \(r, name) {
+  coefs <- read_csv(file.path(COEFS_DIR, paste0(name, "_quant.csv")), show_col_types = FALSE)
+  y_scale <- if (r$pct) scale_y_continuous(labels = scales::label_percent(accuracy = 0.01)) else scale_y_continuous()
+  out_levels <- unique(coefs$outcome)
+
+  for (m in unique(coefs$het)) {
+    d <- coefs |> filter(het == m)
+    n_bins <- max(d$bin)
+    d <- bind_rows(d, distinct(d, outcome, bin) |> mutate(year = 2007L, estimate = 0, conf.low = 0, conf.high = 0)) |>
+      mutate(bin = factor(paste(bin_label(bin, n_bins), "vs", bin_label(1, n_bins)), levels = paste(bin_label(2:n_bins, n_bins), "vs", bin_label(1, n_bins))),
+             outcome = factor(outcome, levels = out_levels))
+    p <- ggplot(d, aes(x = year, y = estimate, color = bin)) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+      geom_vline(xintercept = 2008, linetype = "dashed", color = "black") +
+      geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0, position = position_dodge(width = 0.8), alpha = 0.8) +
+      geom_point(size = 1.8, position = position_dodge(width = 0.8)) +
+      facet_wrap(~outcome, scales = "free_y") +
+      scale_color_manual(values = tail(QUANT_COLORS, n_bins - 1), name = NULL) +
+      scale_x_continuous(breaks = r$breaks) +
+      y_scale +
+      theme_minimal() +
+      theme(legend.position = "bottom") +
+      labs(x = "Year", y = r$y,
+           title = paste0("DDD by Baseline ", het_labels[[paste0("het_", m)]], " ", if (n_bins == 3) "Tercile" else "Quartile",
+                          ": Early Activation x Bin, ", r$lab, " (95% CI)"))
+    ggsave(file.path(FIGS_DIR, paste0(name, "_", m, "_quant.png")), p, width = 11, height = if (length(out_levels) > 3) 7 else 5, dpi = 300)
+  }
+})

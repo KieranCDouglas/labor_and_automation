@@ -789,48 +789,6 @@ sc_detainer_rate_yearly <- county_pop |>
   ) |>
   select(state, county, year, detainer_rate)
 
-# county-level impact of SC on detentions by apprehension type
-apprehension_groups <- sc_trac_clean |>
-  filter(apprehension_method != "") |>
-  mutate(apprehension_group = case_when(
-    apprehension_method == "CAP Local Incarceration" ~ "CAP Local Incarceration",
-    apprehension_method %in% c("CAP Federal Incarceration", "CAP State Incarceration",
-                                "Criminal Alien Program") ~ "CAP Federal/State",
-    apprehension_method == "287(g) Program" ~ "287(g) Program",
-    apprehension_method %in% c("Patrol Border", "Patrol Interior", "Boat Patrol",
-                                "Anti-Smuggling") ~ "Border/Patrol",
-    apprehension_method %in% c("Located", "Non-Custodial Arrest", "ERO Reprocessed Arrest",
-                                "Law Enforcement Agency Response Unit", "Other Task Force",
-                                "Worksite Enforcement", "Probation and Parole",
-                                "Organized Crime Drug Enforcement Tas",
-                                "Organized Crime Drug Enforcement Task Force") ~ "Field/Task-Force Arrest",
-    apprehension_method %in% c("Inspections", "Traffic Check", "Transportation Check Bus",
-                                "Transportation Check Freight Train", "Transportation Check Aircraft",
-                                "Transportation Check Passenger Train") ~ "Checks/Inspections",
-    TRUE ~ "Other/Admin"
-  ))
-
-apprehension_type_panel <- county_pop |>
-  distinct(state, county, population) |>
-  semi_join(ag_counties, by = c("state", "county")) |>
-  left_join(sc_county |> select(state, county, first_detainer_year), by = c("state", "county")) |>
-  filter(!is.na(first_detainer_year)) |>
-  cross_join(tibble(year = 2008:2015)) |>
-  cross_join(distinct(apprehension_groups, apprehension_group)) |>
-  left_join(
-    apprehension_groups |>
-      filter(year >= 2008, year <= 2015) |>
-      group_by(state, county, year, apprehension_group) |>
-      summarise(cases = n(), .groups = "drop"),
-    by = c("state", "county", "year", "apprehension_group")
-  ) |>
-  mutate(
-    cases    = replace_na(cases, 0),
-    rate     = cases / population * 10000,
-    rel_year = year - first_detainer_year
-  ) |>
-  filter(rel_year >= -5, rel_year <= 5)
-
 ## 13. rollout map inputs ##------------------------------------------------------------------------
 # first activation year per county (all counties, not just ag) for the rollout maps
 sc_rollout <- sc_activation_clean |>
@@ -1135,6 +1093,130 @@ message(sprintf("ACS CZ panel: %d CZs x %d years; %d early / %d late; CZ cuts: %
                 sum(cz_het_sample$early_share <  CZ_EARLY_SHARE, na.rm = TRUE),
                 paste(names(het_cz_cuts), signif(het_cz_cuts, 3), sep = "=", collapse = ", "), 100 * cz_total_gap))
 
+## 17. QCEW ag employment long panel ##------------------------------------------------------------
+# yearly county annual-average employment from the BLS QCEW (employer UI filings), private ownership,
+# for NAICS 11 (ag, forestry, fishing, hunting), 111 (crop production) and 112 (animal production).
+# 4-digit codes (1151 incl. farm labor contractors) are too suppressed in ag counties to use.
+# UI only covers ag employers above the FUTA threshold ($20k quarterly payroll or 10+ workers in 20
+# weeks; some states cover more) and mostly exempts H-2A workers, so this is formal payroll
+# employment at larger operations. counts are direct county figures, so county clustering is fine.
+# suppressed cells (disclosure_code "N") are reported as 0 and are set to missing. an outcome is
+# kept only for counties disclosed in every year of QCEW_YEARS (a balanced panel per industry), so
+# suppression switching on and off cannot drive the estimates. 2000-2004 are kept as optional extra
+# leads; they are not part of the balance check. outcomes are shares of the county's 2006-07
+# working-age population (from the ACS allocation in section 14), the same units as the ACS outcomes.
+QCEW_FILE     <- file.path(DROPBOX, "generated_data", "qcew_ag_county_annual_2005_2022.dta")
+QCEW_NAICS    <- c(`11` = "qcew_11", `111` = "qcew_111", `112` = "qcew_112")
+QCEW_YEARS    <- 2005:2022
+
+qcew_county_year <- read_dta(QCEW_FILE) |>
+  zap_labels() |>
+  filter(own_code == 5, agglvl_code %in% 74:76, industry_code %in% names(QCEW_NAICS)) |>
+  transmute(
+    county_fips = area_fips,
+    year        = as.integer(year),
+    outcome     = QCEW_NAICS[industry_code],
+    emp         = if_else(disclosure_code == "N", NA_real_, as.numeric(annual_avg_emplvl))
+  ) |>
+  group_by(county_fips, outcome) |>
+  mutate(balanced = sum(!is.na(emp[year %in% QCEW_YEARS])) == length(QCEW_YEARS),
+         emp      = if_else(balanced, emp, NA_real_)) |>
+  ungroup() |>
+  select(-balanced) |>
+  pivot_wider(names_from = outcome, values_from = emp)
+
+qcew_panel <- main |>
+  distinct(state, county, county_id) |>
+  mutate(county_key = county_key(county)) |>
+  inner_join(name_to_fips, by = c("state", "county_key")) |>
+  inner_join(qcew_county_year, by = "county_fips") |>
+  left_join(acs_ag_panel |> distinct(county_fips, wa_pop_base), by = "county_fips") |>
+  mutate(across(all_of(unname(QCEW_NAICS)), \(x) x / wa_pop_base, .names = "{.col}_share")) |>
+  left_join(het_measures |> select(-county, -jail_capacity_imputed), by = c("state", "county_key")) |>
+  mutate(early_activator = het_early, first_detainer_year = het_early_val) |>
+  select(-county_key)
+stopifnot(!anyDuplicated(qcew_panel[c("county_id", "year")]))
+
+message(sprintf(
+  "QCEW panel: %d of %d main counties; balanced %s counties (NAICS 11 / 111 / 112)",
+  n_distinct(qcew_panel$county_id), n_distinct(main$county_id),
+  paste(map_int(unname(QCEW_NAICS), \(v) n_distinct(qcew_panel$county_id[!is.na(qcew_panel[[paste0(v, "_share")]])])),
+        collapse = " / ")
+))
+
+## 18. crop mix: labor-intensive acreage ##---------------------------------------------------------
+# census of ag county acreage for the two hand-harvest crop groups, pulled as single group totals
+# (pull_all_cropmix() in agcensus_api.R): vegetables harvested in the open, and orchards bearing &
+# non-bearing (census orchards include vineyards, citrus and tree nuts). outcomes are shares of the
+# same year's harvested cropland, which also counts orchard land. berries (measure changes after 2002)
+# and nursery (heavily suppressed) are left out.
+# a county with no row for a group had no operations growing it (0 acres); a (D) cell is unknown (NA).
+# as with the QCEW, each outcome keeps only units observed in every census year, so suppression
+# switching on and off cannot drive the estimates. CZ acres are county sums. requiring every county in
+# a CZ to be disclosed leaves only ~70 CZs, so for CZs (D) crop cells count as 0 (cropland must still
+# be disclosed). checked against state totals, (D) cells hide only ~1-2% of national orchard acres and
+# ~3-5% of vegetable acres, so CZ shares are slight lower bounds. counties keep the strict rule, since
+# one (D) cell can be large relative to a single county's cropland.
+CROPMIX_YEARS <- c(2002L, 2007L, 2012L, 2017L, 2022L)
+CROPMIX_VARS  <- c("VEGETABLE TOTALS, IN THE OPEN - ACRES HARVESTED" = "veg_acres",
+                   "ORCHARDS - ACRES BEARING & NON-BEARING"          = "orch_acres",
+                   "AG LAND, CROPLAND, HARVESTED - ACRES"            = "cropland_acres")
+CROPMIX_OUTCOMES <- c("li_share", "veg_share", "orch_share")
+
+cropmix_raw <- read_csv(file.path(RAW_DIR, "crop_mix.csv"), show_col_types = FALSE,
+                        col_types = cols(state_fips_code = "c", county_ansi = "c")) |>
+  filter(!is.na(county_ansi)) |>   # drops the "other (combined) counties" rows
+  transmute(county_fips = paste0(str_pad(state_fips_code, 2, pad = "0"), str_pad(county_ansi, 3, pad = "0")),
+            year = as.integer(year), var = CROPMIX_VARS[short_desc], value)
+
+# absent county-years become 0 acres; explicit (D) NAs are kept
+cropmix_county_year <- cropmix_raw |>
+  complete(county_fips = union(county_fips, cw_cty_cz$county_fips), year = CROPMIX_YEARS,
+           var = unname(CROPMIX_VARS), fill = list(value = 0), explicit = FALSE) |>
+  pivot_wider(names_from = var, values_from = value)
+
+# shares from acres, then NA out every outcome that is not observed in all census years
+add_crop_shares <- function(df, unit) {
+  df |>
+    mutate(
+      li_acres   = veg_acres + orch_acres,
+      li_share   = li_acres   / cropland_acres,
+      veg_share  = veg_acres  / cropland_acres,
+      orch_share = orch_acres / cropland_acres,
+      across(all_of(CROPMIX_OUTCOMES), \(x) if_else(is.finite(x), x, NA_real_))
+    ) |>
+    group_by(pick(all_of(unit))) |>
+    mutate(across(all_of(CROPMIX_OUTCOMES), \(x) if (all(!is.na(x[year %in% CROPMIX_YEARS]))) x else NA_real_)) |>
+    ungroup()
+}
+
+crop_panel <- main |>
+  distinct(state, county, county_id) |>
+  mutate(county_key = county_key(county)) |>
+  inner_join(name_to_fips, by = c("state", "county_key")) |>
+  inner_join(cropmix_county_year, by = "county_fips") |>
+  add_crop_shares("county_fips") |>
+  left_join(het_measures |> select(-county, -jail_capacity_imputed), by = c("state", "county_key")) |>
+  mutate(early_activator = het_early, first_detainer_year = het_early_val) |>
+  select(-county_key)
+stopifnot(!anyDuplicated(crop_panel[c("county_id", "year")]))
+
+crop_cz_panel <- cropmix_county_year |>
+  inner_join(cw_cty_cz, by = "county_fips") |>
+  group_by(czone, year) |>
+  summarise(across(c(veg_acres, orch_acres), \(x) sum(x, na.rm = TRUE)),
+            cropland_acres = sum(cropland_acres), .groups = "drop") |>
+  semi_join(cz_sample, by = "czone") |>
+  add_crop_shares("czone") |>
+  left_join(cz_het, by = "czone") |>
+  mutate(cz_id = as.character(czone))
+stopifnot(!anyDuplicated(crop_cz_panel[c("czone", "year")]))
+
+n_balanced <- \(df, id) paste(map_int(CROPMIX_OUTCOMES, \(v) n_distinct(df[[id]][!is.na(df[[v]])])), collapse = " / ")
+message(sprintf("crop mix: %d county / %d CZ units; balanced (li / veg / orch) counties %s, CZs %s",
+                n_distinct(crop_panel$county_id), n_distinct(crop_cz_panel$czone),
+                n_balanced(crop_panel, "county_id"), n_balanced(crop_cz_panel, "czone")))
+
 ####################################################################################################
 ### write outputs ###
 ####################################################################################################
@@ -1145,13 +1227,15 @@ saveRDS(noncit_split,            file.path(CLEAN_DIR, "noncit_split.rds"))
 saveRDS(het_measures,            file.path(CLEAN_DIR, "het_measures.rds"))
 saveRDS(het_config,              file.path(CLEAN_DIR, "het_config.rds"))
 saveRDS(sc_detainer_rate_yearly, file.path(CLEAN_DIR, "sc_detainer_rate_yearly.rds"))
-saveRDS(apprehension_type_panel, file.path(CLEAN_DIR, "apprehension_type_panel.rds"))
 saveRDS(ag_counties,             file.path(CLEAN_DIR, "ag_counties.rds"))
 saveRDS(sc_rollout,              file.path(CLEAN_DIR, "sc_rollout.rds"))
 saveRDS(all_removals_clean,      file.path(CLEAN_DIR, "all_removals_clean.rds"))
 saveRDS(acs_ag_panel,            file.path(CLEAN_DIR, "acs_ag_panel.rds"))
 saveRDS(acs_panel,               file.path(CLEAN_DIR, "acs_panel.rds"))
 saveRDS(acs_cz_panel,            file.path(CLEAN_DIR, "acs_cz_panel.rds"))
+saveRDS(qcew_panel,              file.path(CLEAN_DIR, "qcew_panel.rds"))
+saveRDS(crop_panel,              file.path(CLEAN_DIR, "crop_panel.rds"))
+saveRDS(crop_cz_panel,           file.path(CLEAN_DIR, "crop_cz_panel.rds"))
 
 # csv copy of main df for eyeballing - downstream scripts read main.rds
 write_csv(main, file.path(CLEAN_DIR, "main_inspect.csv"), na = "")
