@@ -136,6 +136,10 @@ pull_all_crops <- function(years = c(2007, 2012, 2017)) {
 }
 
 # --- Land use params (cropland, irrigated land, etc.) ------------------------
+# domain_desc = "TOTAL" keeps only county totals. without it the API also returns size-class breakdown
+# rows under the same short_desc, and landuse.csv (pulled before this filter was added) kept some of
+# those instead of the totals - e.g. 2002 harvested cropland sums to 141m acres nationally, not ~300m.
+# landuse.csv is no longer used by 01_clean.r; see pull_county_totals() below.
 
 landuse_params <- function(year, states = NULL) {
   p <- list(
@@ -143,6 +147,7 @@ landuse_params <- function(year, states = NULL) {
     sector_desc       = "ECONOMICS",
     group_desc        = "FARMS & LAND & ASSETS",
     agg_level_desc    = "COUNTY",
+    domain_desc       = "TOTAL",
     unit_desc         = "ACRES",
     statisticcat_desc = "AREA",
     year              = as.character(year)
@@ -182,6 +187,228 @@ pull_all_landuse <- function(years = c(2007, 2012, 2017)) {
   map(years, pull_landuse_year) |> bind_rows()
 }
 
+# --- Hired farm labor: workers and payroll (county level) --------------------
+# domain_desc = "TOTAL" excludes the "LABOR: (HIRED WORKERS GE 150 DAYS & LT 150 DAYS)" breakdown
+# rows that duplicate the same short_desc under domain_desc = "LABOR" - TOTAL gives one row per county.
+# two different migrant-labor measures, with different year coverage:
+#   - LABOR, MIGRANT - NUMBER OF WORKERS: actual headcount of migrant workers. Only exists for 2012/2017
+#     (not tabulated at county level in the 2002/2007 censuses) - pulling it across all years is fine, it
+#     will just come back empty pre-2012.
+#   - LABOR, MIGRANT - OPERATIONS WITH WORKERS: count of farms reporting migrant labor (an extensive-
+#     margin measure, not a headcount). Available at county level for all 4 years (2002/2007/2012/2017) -
+#     this is what the published Census of Ag Table 7 "Migrant farm labor on farms with hired labor" row
+#     shows.
+
+LABOR_SHORT_DESC <- c(
+  "LABOR, HIRED - NUMBER OF WORKERS",
+  "LABOR, HIRED - EXPENSE, MEASURED IN $",
+  "LABOR, MIGRANT - NUMBER OF WORKERS",
+  "LABOR, MIGRANT - OPERATIONS WITH WORKERS"
+)
+
+labor_params <- function(year, states = NULL) {
+  p <- list(
+    source_desc    = "CENSUS",
+    commodity_desc = "LABOR",
+    agg_level_desc = "COUNTY",
+    domain_desc    = "TOTAL",
+    year           = as.character(year)
+  )
+  if (!is.null(states)) p$state_alpha <- paste(states, collapse = ",")
+  p
+}
+
+pull_labor_state_year <- function(state, year, delay = 1) {
+  Sys.sleep(delay)
+  raw <- tryCatch(nass_get(labor_params(year, state)), error = \(e) NULL)
+  if (is.null(raw) || nrow(raw) == 0) return(NULL)
+  raw |>
+    filter(short_desc %in% LABOR_SHORT_DESC) |>
+    select(state_alpha, county_name, county_ansi, state_fips_code,
+           year, short_desc, Value) |>
+    rename(value = Value) |>
+    mutate(
+      year  = as.integer(year),
+      value = as.numeric(gsub(",", "", value))
+    )
+}
+
+pull_labor_year <- function(year, states = ALL_STATES) {
+  message("Pulling labor ", year, " (", length(states), " states)...")
+  results <- vector("list", length(states))
+  for (i in seq_along(states)) {
+    message("  [", i, "/", length(states), "] ", states[i])
+    results[[i]] <- tryCatch(
+      pull_labor_state_year(states[i], year),
+      error = \(e) { message("    ERROR: ", conditionMessage(e)); NULL }
+    )
+  }
+  bind_rows(results)
+}
+
+pull_all_labor <- function(years = c(2002, 2007, 2012, 2017)) {
+  map(years, pull_labor_year) |> bind_rows()
+}
+
+# --- Farms (count) and value of land & buildings (county level) --------------
+# complements landuse.csv, which already has land-in-farms/land-use acreage; this adds the two pieces
+# landuse.csv doesn't cover. domain_desc = "TOTAL" again excludes the AREA OPERATED/NAICS/TENURE
+# breakdown rows so each short_desc collapses to one row per county.
+
+FARMVALUE_SHORT_DESC <- c(
+  "FARM OPERATIONS - NUMBER OF OPERATIONS",
+  "AG LAND, INCL BUILDINGS - ASSET VALUE, MEASURED IN $"
+)
+
+farmvalue_params <- function(year, states = NULL) {
+  p <- list(
+    source_desc    = "CENSUS",
+    agg_level_desc = "COUNTY",
+    domain_desc    = "TOTAL",
+    year           = as.character(year)
+  )
+  if (!is.null(states)) p$state_alpha <- paste(states, collapse = ",")
+  p
+}
+
+pull_farmvalue_state_year <- function(state, year, delay = 1) {
+  Sys.sleep(delay)
+  results <- map(FARMVALUE_SHORT_DESC, \(sd) {
+    raw <- tryCatch(
+      nass_get(c(farmvalue_params(year, state), list(short_desc = sd))),
+      error = \(e) NULL
+    )
+    if (is.null(raw) || nrow(raw) == 0) return(NULL)
+    raw |>
+      select(state_alpha, county_name, county_ansi, state_fips_code,
+             year, short_desc, Value) |>
+      rename(value = Value) |>
+      mutate(
+        year  = as.integer(year),
+        value = as.numeric(gsub(",", "", value))
+      )
+  })
+  bind_rows(results)
+}
+
+pull_farmvalue_year <- function(year, states = ALL_STATES) {
+  message("Pulling farm count/value ", year, " (", length(states), " states)...")
+  results <- vector("list", length(states))
+  for (i in seq_along(states)) {
+    message("  [", i, "/", length(states), "] ", states[i])
+    results[[i]] <- tryCatch(
+      pull_farmvalue_state_year(states[i], year),
+      error = \(e) { message("    ERROR: ", conditionMessage(e)); NULL }
+    )
+  }
+  bind_rows(results)
+}
+
+pull_all_farmvalue <- function(years = c(2002, 2007, 2012, 2017)) {
+  map(years, pull_farmvalue_year) |> bind_rows()
+}
+
+# --- Harvested cropland by size of farm (county level) ------------------------
+# domain_desc = "AREA OPERATED" breaks AG LAND, CROPLAND, HARVESTED - ACRES into 12 farm-size buckets
+# (e.g. "AREA OPERATED: (1.0 TO 9.9 ACRES)" ... "AREA OPERATED: (2,000 OR MORE ACRES)") instead of the
+# single county total already in crops_area_harvested.csv/landuse.csv.
+
+harvested_by_size_params <- function(year, states = NULL) {
+  p <- list(
+    source_desc    = "CENSUS",
+    agg_level_desc = "COUNTY",
+    short_desc     = "AG LAND, CROPLAND, HARVESTED - ACRES",
+    domain_desc    = "AREA OPERATED",
+    year           = as.character(year)
+  )
+  if (!is.null(states)) p$state_alpha <- paste(states, collapse = ",")
+  p
+}
+
+pull_harvested_by_size_state_year <- function(state, year, delay = 1) {
+  Sys.sleep(delay)
+  raw <- tryCatch(nass_get(harvested_by_size_params(year, state)), error = \(e) NULL)
+  if (is.null(raw) || nrow(raw) == 0) return(NULL)
+  raw |>
+    select(state_alpha, county_name, county_ansi, state_fips_code,
+           year, short_desc, domaincat_desc, Value) |>
+    rename(value = Value) |>
+    mutate(
+      year  = as.integer(year),
+      value = as.numeric(gsub(",", "", value))
+    )
+}
+
+pull_harvested_by_size_year <- function(year, states = ALL_STATES) {
+  message("Pulling harvested cropland by farm size ", year, " (", length(states), " states)...")
+  results <- vector("list", length(states))
+  for (i in seq_along(states)) {
+    message("  [", i, "/", length(states), "] ", states[i])
+    results[[i]] <- tryCatch(
+      pull_harvested_by_size_state_year(states[i], year),
+      error = \(e) { message("    ERROR: ", conditionMessage(e)); NULL }
+    )
+  }
+  bind_rows(results)
+}
+
+pull_all_harvested_by_size <- function(years = c(2002, 2007, 2012, 2017)) {
+  map(years, pull_harvested_by_size_year) |> bind_rows()
+}
+
+# --- Crop mix: labor-intensive group totals (county level) -------------------
+# one top-level row per county for each crop group, instead of the nested per-crop rows in
+# crops_area_harvested.csv (totals + components + fresh/processing + irrigated, which double count).
+# orchards are "acres bearing & non-bearing", not "area harvested", so the crops pull above misses them;
+# census orchards include vineyards, citrus and tree nuts. harvested cropland (the share denominator)
+# also counts orchard land. a single short_desc at county level is small enough to pull nationally.
+# (D) cells come back as NA; a county with no row had no operations growing that group.
+
+CROPMIX_SHORT_DESC <- c(
+  "VEGETABLE TOTALS, IN THE OPEN - ACRES HARVESTED",
+  "ORCHARDS - ACRES BEARING & NON-BEARING",
+  "AG LAND, CROPLAND, HARVESTED - ACRES"
+)
+
+pull_cropmix_year <- function(year, delay = 1) {
+  message("Pulling crop mix ", year, "...")
+  map(CROPMIX_SHORT_DESC, \(sd) {
+    Sys.sleep(delay)
+    nass_get(list(source_desc = "CENSUS", agg_level_desc = "COUNTY", domain_desc = "TOTAL",
+                  short_desc = sd, year = as.character(year))) |>
+      select(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc, Value) |>
+      rename(value = Value) |>
+      mutate(
+        year  = as.integer(year),
+        value = as.numeric(gsub(",", "", value))
+      )
+  }) |>
+    bind_rows()
+}
+
+pull_all_cropmix <- function(years = c(2002, 2007, 2012, 2017, 2022)) {
+  map(years, pull_cropmix_year) |> bind_rows()
+}
+
+# --- County totals for a few items --------------------------------------------
+# one county-total row per item and year (domain_desc = "TOTAL"), pulled nationally. used for the
+# 2002 farmland share that defines the ag-county sample: land in farms ("FARM OPERATIONS - ACRES
+# OPERATED"; there is no county-total "AG LAND - ACRES" row in the 2002 census) over total land area.
+FARMLAND_SHORT_DESC <- c("FARM OPERATIONS - ACRES OPERATED", "LAND AREA, INCL NON-AG - ACRES")
+
+pull_county_totals <- function(short_descs, years, delay = 1) {
+  expand_grid(sd = short_descs, yr = years) |>
+    pmap(\(sd, yr) {
+      Sys.sleep(delay)
+      nass_get(list(source_desc = "CENSUS", agg_level_desc = "COUNTY", domain_desc = "TOTAL",
+                    short_desc = sd, year = as.character(yr))) |>
+        select(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc, Value) |>
+        rename(value = Value) |>
+        mutate(year = as.integer(year), value = suppressWarnings(as.numeric(gsub(",", "", value))))
+    }) |>
+    bind_rows()
+}
+
 # --- Run ---------------------------------------------------------------------
 # To pull all data from scratch, uncomment and run the blocks below.
 # To load functions only (e.g. for a targeted re-pull), source this file as-is.
@@ -217,3 +444,34 @@ pull_all_landuse <- function(years = c(2007, 2012, 2017)) {
 #            .keep_all = TRUE)
 # write_csv(landuse, "data/main/landuse.csv")
 # message("Saved land use: ", nrow(landuse), " rows")
+
+# labor <- pull_all_labor()
+# labor <- labor |>
+#   arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
+#   distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
+#            .keep_all = TRUE)
+# write_csv(labor, "data/main/hired_labor.csv")
+# message("Saved hired labor: ", nrow(labor), " rows")
+
+# farmvalue <- pull_all_farmvalue()
+# farmvalue <- farmvalue |>
+#   arrange(state_alpha, county_name, year, short_desc, desc(value)) |>
+#   distinct(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc,
+#            .keep_all = TRUE)
+# write_csv(farmvalue, "data/main/farms_landvalue.csv")
+# message("Saved farm count/land value: ", nrow(farmvalue), " rows")
+
+# harvested_by_size <- pull_all_harvested_by_size()
+# harvested_by_size <- harvested_by_size |>
+#   arrange(state_alpha, county_name, year, domaincat_desc, desc(value)) |>
+#   distinct(state_alpha, county_name, county_ansi, state_fips_code, year, domaincat_desc,
+#            .keep_all = TRUE)
+# write_csv(harvested_by_size, "data/main/harvested_cropland_by_farmsize.csv")
+# message("Saved harvested cropland by farm size: ", nrow(harvested_by_size), " rows")
+
+# farmland <- pull_county_totals(FARMLAND_SHORT_DESC, 2002)
+# write_csv(farmland, "data/main/farmland_2002.csv")
+
+# cropmix <- pull_all_cropmix()
+# write_csv(cropmix, "data/main/crop_mix.csv")
+# message("Saved crop mix: ", nrow(cropmix), " rows")

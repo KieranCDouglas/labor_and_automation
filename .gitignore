@@ -4,7 +4,11 @@
 # Data (kept local, not pushed to GitHub)
 data/
 
+# working notes in the writing folder stay local (the manuscript, main.tex, is tracked)
+primary/writing/*.md
+
 # R
 .Rhistory
+.Rapp.history
 .RData
 .Rproj.user/
