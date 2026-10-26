@@ -136,6 +136,10 @@ pull_all_crops <- function(years = c(2007, 2012, 2017)) {
 }
 
 # --- Land use params (cropland, irrigated land, etc.) ------------------------
+# domain_desc = "TOTAL" keeps only county totals. without it the API also returns size-class breakdown
+# rows under the same short_desc, and landuse.csv (pulled before this filter was added) kept some of
+# those instead of the totals - e.g. 2002 harvested cropland sums to 141m acres nationally, not ~300m.
+# landuse.csv is no longer used by 01_clean.r; see pull_county_totals() below.
 
 landuse_params <- function(year, states = NULL) {
   p <- list(
@@ -143,6 +147,7 @@ landuse_params <- function(year, states = NULL) {
     sector_desc       = "ECONOMICS",
     group_desc        = "FARMS & LAND & ASSETS",
     agg_level_desc    = "COUNTY",
+    domain_desc       = "TOTAL",
     unit_desc         = "ACRES",
     statisticcat_desc = "AREA",
     year              = as.character(year)
@@ -385,6 +390,25 @@ pull_all_cropmix <- function(years = c(2002, 2007, 2012, 2017, 2022)) {
   map(years, pull_cropmix_year) |> bind_rows()
 }
 
+# --- County totals for a few items --------------------------------------------
+# one county-total row per item and year (domain_desc = "TOTAL"), pulled nationally. used for the
+# 2002 farmland share that defines the ag-county sample: land in farms ("FARM OPERATIONS - ACRES
+# OPERATED"; there is no county-total "AG LAND - ACRES" row in the 2002 census) over total land area.
+FARMLAND_SHORT_DESC <- c("FARM OPERATIONS - ACRES OPERATED", "LAND AREA, INCL NON-AG - ACRES")
+
+pull_county_totals <- function(short_descs, years, delay = 1) {
+  expand_grid(sd = short_descs, yr = years) |>
+    pmap(\(sd, yr) {
+      Sys.sleep(delay)
+      nass_get(list(source_desc = "CENSUS", agg_level_desc = "COUNTY", domain_desc = "TOTAL",
+                    short_desc = sd, year = as.character(yr))) |>
+        select(state_alpha, county_name, county_ansi, state_fips_code, year, short_desc, Value) |>
+        rename(value = Value) |>
+        mutate(year = as.integer(year), value = suppressWarnings(as.numeric(gsub(",", "", value))))
+    }) |>
+    bind_rows()
+}
+
 # --- Run ---------------------------------------------------------------------
 # To pull all data from scratch, uncomment and run the blocks below.
 # To load functions only (e.g. for a targeted re-pull), source this file as-is.
@@ -444,6 +468,9 @@ pull_all_cropmix <- function(years = c(2002, 2007, 2012, 2017, 2022)) {
 #            .keep_all = TRUE)
 # write_csv(harvested_by_size, "data/main/harvested_cropland_by_farmsize.csv")
 # message("Saved harvested cropland by farm size: ", nrow(harvested_by_size), " rows")
+
+# farmland <- pull_county_totals(FARMLAND_SHORT_DESC, 2002)
+# write_csv(farmland, "data/main/farmland_2002.csv")
 
 # cropmix <- pull_all_cropmix()
 # write_csv(cropmix, "data/main/crop_mix.csv")
