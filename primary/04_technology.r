@@ -102,6 +102,19 @@ tech_terc <- bind_rows(es_terciles(tech_panels$cz, TECH_OUTCOMES, "cz_id", HET_D
   mutate(outcome = factor(outcome, levels = OUTCOME_LEVELS))
 write_csv(tech_terc, file.path(COEFS_DIR, "technology_terciles.csv"))
 
+# the crop-mix terciles under stricter comparisons: the further baseline characteristics x year
+# (ES_BASELINE), and population size band x year fixed effects (places compared only within the same
+# third of the population distribution, with no straight-line assumption about size)
+CROP_TERC_OUTCOMES <- CROP_OUTCOMES[c("Vegetables + Orchards (pp of cropland)", "Orchards (pp of cropland)")]
+crop_banded <- add_size_band(crop_panels$cz, "cz_id")
+crop_terc_rob <- bind_rows(
+  es_terciles(crop_panels$cz, CROP_TERC_OUTCOMES, "cz_id", HET_DIMS) |> mutate(variant = "Main specification"),
+  es_terciles(crop_panels$cz, CROP_TERC_OUTCOMES, "cz_id", HET_DIMS, baseline = TRUE) |> mutate(variant = "+ baseline characteristics x year"),
+  es_terciles(crop_banded, CROP_TERC_OUTCOMES, "cz_id", HET_DIMS, time_fe = "state^year + size_band^year") |> mutate(variant = "+ size band x year FE")
+) |>
+  mutate(variant = factor(variant, levels = c("Main specification", "+ baseline characteristics x year", "+ size band x year FE")))
+write_csv(crop_terc_rob, file.path(COEFS_DIR, "technology_cropmix_terciles_robustness.csv"))
+
 tech_summary |>
   transmute(spec, outcome, term = if_else(term == "exposure", "per year", "x vuln"),
             cell = sprintf("%7.3f (%.3f) pre p %.2f", post_avg, post_se, pre_p)) |>
@@ -151,3 +164,12 @@ p <- es_tercile_plot(tech_terc, "Technology and Crop Mix Effects by Tercile of V
                      labels = scales::label_number(accuracy = 0.01)) +
   theme(strip.text.x = element_text(size = 8))
 ggsave(fig_path("technology", "technology_terciles.png"), p, width = 18, height = 5, dpi = 300)
+
+## 5. crop mix by tercile, stricter comparisons ##----------------------------------------------------
+p <- crop_terc_rob |>
+  mutate(outcome = factor(paste0(str_remove(outcome, " \\(pp of cropland\\)"), "\n", variant),
+                          levels = as.vector(outer(str_remove(names(CROP_TERC_OUTCOMES), " \\(pp of cropland\\)"), levels(variant), paste, sep = "\n")))) |>
+  es_tercile_plot("Crop Mix by Tercile of Vulnerability and Reliance on Farm Labor, Stricter Comparisons (95% CI)",
+                  "Average post-2007 effect per year of exposure (pp of cropland)", labels = scales::label_number(accuracy = 0.1)) +
+  theme(strip.text.x = element_text(size = 8))
+ggsave(fig_path("technology", "cropmix_terciles_robustness.png"), p, width = 18, height = 5, dpi = 300)

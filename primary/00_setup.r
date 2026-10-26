@@ -20,7 +20,7 @@ for (d in c(CLEAN_DIR, COEFS_DIR, TABLES_DIR, FIGS_DIR)) dir.create(d, showWarni
 # county names: drop the geography suffix and title-case, so sources that spell names differently
 # ("Adams County", "ADAMS") agree
 clean_county <- function(county) {
-  str_to_title(str_remove(county, " County$| Parish$| Borough$| Census Area$| city$"))
+  str_to_title(str_remove(county, " County$| Parish$| City and Borough$| Borough$| Census Area$| Municipality$| city$"))
 }
 
 # looser join key for matching names across sources: lower case, saint/sainte normalized, letters only
@@ -67,16 +67,18 @@ theme_paper <- function() {
 # exposure_u is the extra years of SC a unit had relative to the last activator (0 to 4.24), so b_s is
 # the effect of one more year of exposure in year s, relative to ES_REF. v_u is the chosen
 # vulnerability measure standardized across the sample's units (per 1 SD), so g_s is how much the
-# per-year effect grows per SD of vulnerability. X_u are border
-# distance and Great Recession severity. errors are clustered by unit.
+# per-year effect grows per SD of vulnerability. X_u are border distance, Great Recession severity
+# and log 2010 population: SC reached border and large metro jurisdictions first, and city size also
+# predicts different farm-employment trends, so the comparison is between places of similar size.
+# errors are clustered by unit.
 ES_REF      <- 2007
-ES_CONTROLS <- c("border_dist_km", "gr_severity")
+ES_CONTROLS <- c("border_dist_km", "gr_severity", "log_pop_2010")
 
-# robustness: baseline characteristics x year, added to the controls. they absorb trends tied to how
-# agricultural, how populous and how immigrant a place was before SC, all of which shaped the order
-# in which places were activated. (with a vulnerability interaction, the vulnerability term already
-# carries its own year interaction.)
-ES_BASELINE <- c("ag_share_base", "log_pop_2010", "het_hispnc_val")
+# robustness: further baseline characteristics x year, added to the controls. they absorb trends tied
+# to how agricultural and how immigrant a place was before SC, both of which also tracked the
+# activation order. (with a vulnerability interaction, the vulnerability term already carries its own
+# year interaction.)
+ES_BASELINE <- c("ag_share_base", "het_hispnc_val")
 
 # estimation sample for one outcome: rows with the outcome, exposure, controls and (if given) the
 # vulnerability measure, with vz = the measure standardized across the sample's units
@@ -91,8 +93,10 @@ es_sample <- function(data, outcome, unit, vuln = NULL, controls = ES_CONTROLS) 
   d
 }
 
+# baseline: FALSE, TRUE (all of ES_BASELINE) or a character vector of baseline variables to add x year
 fit_es <- function(data, outcome, unit, vuln = NULL, time_fe = "state^year", cluster = unit, baseline = FALSE) {
-  controls <- c(ES_CONTROLS, if (baseline) setdiff(ES_BASELINE, vuln))
+  extra    <- if (isTRUE(baseline)) ES_BASELINE else if (is.character(baseline)) baseline else NULL
+  controls <- c(ES_CONTROLS, setdiff(extra, vuln))
   d   <- es_sample(data, outcome, unit, vuln, controls)
   rhs <- c(sprintf("i(year, exposure, ref = %d)", ES_REF),
            if (!is.null(vuln)) sprintf("i(year, %s, ref = %d)", c("vz", "xv"), ES_REF),
@@ -303,15 +307,19 @@ es_heterogeneity_plot <- function(het, title, x_lab, labels = scales::label_perc
 # do not matter), and one model gives the per-year exposure effect within each third:
 #   y = sum_s [b_s exposure + c2_s exposure x T2 + c3_s exposure x T3 + d2_s T2 + d3_s T3] 1{t=s} + controls + FE
 # the effect in tercile k is b + c_k (b in the bottom tercile). no linearity across the dimension.
-es_tercile_fit <- function(data, outcome, unit, v) {
-  d    <- es_sample(data, outcome, unit, vuln = v)
+# time_fe and baseline as in fit_es; "+ size_band^year" in time_fe compares within population terciles
+# (add the column with add_size_band())
+es_tercile_fit <- function(data, outcome, unit, v, time_fe = "state^year", baseline = FALSE) {
+  extra    <- if (isTRUE(baseline)) ES_BASELINE else if (is.character(baseline)) baseline else NULL
+  controls <- c(ES_CONTROLS, setdiff(extra, v))
+  d    <- es_sample(data, outcome, unit, vuln = v, controls = controls)
   terc <- d[c(unit, v)] |> distinct()
   terc$tercile <- ntile(terc[[v]], 3)
   d <- d |>
     left_join(terc[c(unit, "tercile")], by = unit) |>
     mutate(t2 = as.integer(tercile == 2), t3 = as.integer(tercile == 3), xt2 = exposure * t2, xt3 = exposure * t3)
-  rhs <- sprintf("i(year, %s, ref = %d)", c("exposure", "xt2", "xt3", "t2", "t3", ES_CONTROLS), ES_REF)
-  m <- feols(as.formula(sprintf("%s ~ %s | %s + state^year", outcome, paste(rhs, collapse = " + "), unit)),
+  rhs <- sprintf("i(year, %s, ref = %d)", c("exposure", "xt2", "xt3", "t2", "t3", controls), ES_REF)
+  m <- feols(as.formula(sprintf("%s ~ %s | %s + %s", outcome, paste(rhs, collapse = " + "), unit, time_fe)),
              data = d, cluster = as.formula(paste0("~", unit)))
   bind_rows(es_post_combo(m, c(exposure = 1)),
             es_post_combo(m, c(exposure = 1, xt2 = 1)),
@@ -319,12 +327,19 @@ es_tercile_fit <- function(data, outcome, unit, v) {
     mutate(group = paste("Tercile", 1:3), n_units = n_distinct(d[[unit]]))
 }
 
-es_terciles <- function(data, outcomes, unit, dims) {
+es_terciles <- function(data, outcomes, unit, dims, time_fe = "state^year", baseline = FALSE) {
   grid <- expand_grid(dim = names(dims), outcome = names(outcomes))
-  grid$res <- map2(grid$dim, grid$outcome, \(v, o) es_tercile_fit(data, outcomes[[o]], unit, v))
+  grid$res <- map2(grid$dim, grid$outcome, \(v, o) es_tercile_fit(data, outcomes[[o]], unit, v, time_fe, baseline))
   grid |>
     unnest(res) |>
     mutate(dim_label = factor(dims[dim], levels = dims), outcome = factor(outcome, levels = names(outcomes)))
+}
+
+# population size band: tercile of log 2010 population across the panel's units
+add_size_band <- function(data, unit) {
+  bands <- data[c(unit, "log_pop_2010")] |> distinct()
+  bands$size_band <- ntile(bands$log_pop_2010, 3)
+  left_join(data, bands[c(unit, "size_band")], by = unit)
 }
 
 es_tercile_plot <- function(terc, title, x_lab, labels = scales::label_percent(accuracy = 0.1)) {

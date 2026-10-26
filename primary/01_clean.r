@@ -5,7 +5,7 @@
 ## does: loads raw data, cleans it, and builds every analysis dataset used downstream.
 ## reads:  dropbox kieran/data/raw/*, plus the TRAC, IPUMS, QCEW, dorn crosswalk and
 ##         generated_data files elsewhere in the dropbox
-## writes: dropbox kieran/data/clean/*.rds (read by 02_models.r and 03_figs.r)
+## writes: dropbox kieran/data/clean/*.rds (read by 02_vulnerability.r and the question scripts)
 ####################################################################################################
 
 ####################################################################################################
@@ -20,21 +20,6 @@ library(tidycensus)
 library(haven)
 
 source("/Users/kieran/Documents/GitHub/labor_and_automation/primary/00_setup.r")
-
-## exposure heterogeneity thresholds ##-------------------------------------------------------------
-# cutoffs for the binary het_<m> indicators built in section 10.
-het_config <- tribble(
-  ~measure,    ~cut,    ~high_if, ~label,
-  "noncit",    0.015,   ">=",     "Noncitizen Share",
-  "undoc",     0.0091,  ">=",     "Undocumented Share (Proxy)",
-  "early",     2011,    "<=",     "Early Activation",
-  "jail_cap",  2.735,   ">=",     "Jail Capacity",
-  "jail_flow", 12.565,  ">=",     "Jail Admissions"
-)
-
-# commuting-zone versions of the same splits (section 14). CZ's count as early if at least this share of its population activated by 2011.
-het_cz_cuts <- c(noncit = NA, undoc = NA, jail_cap = NA, jail_flow = NA)
-CZ_EARLY_SHARE <- 0.5
 
 ## county identifiers ##----------------------------------------------------------------------------
 # one FIPS per (state, cleaned name). a handful of states have an independent city and a county that
@@ -223,15 +208,7 @@ farm_counts <- farms_landvalue |>
 stopifnot(!anyDuplicated(farm_counts[c("county_fips", "year")]))
 
 ## 5. secure communities activation dates ##--------------------------------------------------------
-# official county-level SC activation schedule from ICE
-sc_activation_clean <- sc_ice |>
-  mutate(
-    county = clean_county(county),
-    activation_date = as.Date(activation_date),
-    first_detainer_year = year(activation_date)
-  )
-
-# one activation date per county FIPS, with the continuous treatment:
+# official county-level SC activation schedule from ICE: one activation date per county FIPS, with the continuous treatment:
 #   earliness_norm  (max activation date - date_j) / (max - min), day resolution, min/max over all
 #                   activation dates, so 1 = earliest and 0 = latest activator
 #   earliness_rank  1 - percentile rank of the activation date
@@ -438,106 +415,56 @@ message(sprintf(
 
 
 ## 9. merge for main analysis df ##-------------------------------------------------------------------
-# one row per (state, county). a few names map to two activation rows (a county and a same-named
-# independent city, e.g. MD Baltimore); the earlier date is kept, as in het_early (section 10).
-sc_county <- sc_activation_clean |>
-  group_by(state, county) |>
-  summarise(first_detainer_year = min(first_detainer_year), .groups = "drop") |>
-  mutate(early_activator = as.integer(first_detainer_year <= 2011))
-
-# create main df by merging on state and county, filtered to agricultural counties.
-# year filter keeps all four ag census years (2002/2007/2012/2017); 2002 predates SC entirely so it's a
-# second pre-treatment point for checking parallel trends against 2007.
+# census of ag counties with an SC activation date (section 5), one row per county and census year.
+# 2002 predates SC entirely, so it is a pre-treatment point for checking parallel trends against 2007.
 main <- expenditures_clean |>
-  left_join(sc_county, by = c("state", "county")) |>
-  filter(year %in% c(2002, 2007, 2012, 2017), !is.na(early_activator)) |>
+  filter(year %in% c(2002, 2007, 2012, 2017)) |>
   # unique county identifier: county names repeat across states
   mutate(county_id = paste(state, county, sep = ", "),
          county_key = county_key(county)) |>
   left_join(name_to_fips,           by = c("state", "county_key")) |>
   select(-county_key) |>
+  semi_join(activation_fips,        by = "county_fips") |>
   left_join(farm_counts,            by = c("county_fips", "year")) |>
   left_join(hired_labor_controls,   by = c("state", "county", "year")) |>
   left_join(county_foreign_born,    by = c("state", "county")) |>
   left_join(jail_capacity_controls, by = c("state", "county")) |>
-  # admits_per_1k: baseline jail booking flow (binned as het_jail_flow in section 10).
+  # admits_per_1k: baseline jail booking flow (het_jail_flow_val in section 10).
   left_join(admits_split,           by = c("state", "county")) |>
   # hired workers per farm, the labor-intensity measure alongside the expense shares in section 1
   mutate(hired_workers_per_farm = hired_workers / na_if(total_farms, 0))
 stopifnot(!anyDuplicated(main[c("county_id", "year")]))
 
-## 10. exposure heterogeneity measures ##-----------------------------------------------------------
-# collects baseline county characteristics that plausibly shift how hard SC hit a county. every measure shares
-# one schema so they can be swapped into the same regression:
-#   het_<m>_val  double   continuous pre-period value
-#   het_<m>      integer  1 = high exposure side, 0 = low, NA when the value is missing
-# measures:
+## 10. candidate vulnerability measures ##----------------------------------------------------------
+# baseline county characteristics that plausibly shift how hard SC hit a place, as continuous
+# pre-period values (het_<m>_val). 02_vulnerability.r tests which best predicts removals; het_hispnc_val
+# (2000 Census) is added in section 19.
 #   noncit     noncitizen share of population, ACS 2005-09
-#   undoc      PROXY: Mexico/Central America-born share of population, ACS 2005-09. 
+#   undoc      Mexico/Central America-born share of population, ACS 2005-09
 #   jail_cap   rated jail capacity per 1k residents, BJS 2006 (stock)
 #   jail_flow  jail admissions per 1k residents, Vera 2004-07 average (flow)
-# thresholds are set in het_config in the prelude at the top of this script.
 
 with_key <- \(df) df |> mutate(county_key = county_key(county)) |> select(-county)
 
-# one row per county, continuous values only. universe is every county so the table can also be
-# joined onto the SC removal-rate panels, not just main.
-het_values <- county_pop |>
+# one row per county. universe is every county so the table can be joined onto any panel.
+het_measures <- county_pop |>
   mutate(county_key = county_key(county)) |>
-  left_join(with_key(county_foreign_born), by = c("state", "county_key")) |>
-  left_join(
-    # min() because a few county names map to two activation rows (county + independent city)
-    sc_county |> with_key() |> group_by(state, county_key) |>
-      summarise(first_detainer_year = min(first_detainer_year), .groups = "drop"),
-    by = c("state", "county_key")
-  ) |>
+  left_join(with_key(county_foreign_born),     by = c("state", "county_key")) |>
   left_join(with_key(jail_capacity_controls), by = c("state", "county_key")) |>
   left_join(with_key(admits_split),           by = c("state", "county_key")) |>
   transmute(
     state, county, county_key,
     het_noncit_val    = noncitizen_share_2009,
     het_undoc_val     = mexca_share_2009,
-    het_early_val     = as.numeric(first_detainer_year),
     het_jail_cap_val  = jail_capacity_2006 / population * 1000,
     het_jail_flow_val = admits_per_1k
   )
-stopifnot(!anyDuplicated(het_values[c("state", "county_key")]))
-
-# resolve NA cuts to the analysis-sample median
-het_sample <- het_values |>
-  semi_join(main |> distinct(state, county) |> mutate(county_key = county_key(county)), by = c("state", "county_key"))
-het_config <- het_config |>
-  mutate(cut = map2_dbl(measure, cut, \(m, c)
-    if (is.na(c)) median(het_sample[[paste0("het_", m, "_val")]], na.rm = TRUE) else c))
-
-het_measures <- het_values
-for (i in seq_len(nrow(het_config))) {
-  m   <- het_config$measure[i]
-  val <- het_measures[[paste0("het_", m, "_val")]]
-  het_measures[[paste0("het_", m)]] <- as.integer(
-    if (het_config$high_if[i] == ">=") val >= het_config$cut[i] else val <= het_config$cut[i]
-  )
-}
+stopifnot(!anyDuplicated(het_measures[c("state", "county_key")]))
 
 main <- main |>
   mutate(county_key = county_key(county)) |>
   left_join(het_measures |> select(-county), by = c("state", "county_key")) |>
   select(-county_key)
-
-# early_activator (matched on exact names) and het_early (matched on county_key, which the other
-# panels use as their treatment) must agree
-stopifnot(all(main$early_activator == main$het_early, na.rm = TRUE))
-
-# balance check in the analysis sample: cuts used, then analysis-sample counties in each
-# early_activator x het cell (the cells that identify the DDD term). tweak het_config to rebalance.
-print(het_config)
-main |>
-  select(state, county, early_activator, all_of(paste0("het_", het_config$measure))) |>
-  distinct() |>
-  pivot_longer(starts_with("het_"), names_to = "het", values_to = "high") |>
-  count(het, early_activator, high) |>
-  pivot_wider(names_from = c(early_activator, high), values_from = n, names_glue = "early{early_activator}_high{high}") |>
-  print()
 
 ## 11. SC removals ##-------------------------------------------------------------------------------
 # community-channel SC removals (section 2) by county, for 02_vulnerability.r, which tests which
@@ -601,7 +528,7 @@ ACS_YEARS    <- 2005:2022
 ACS_BASELINE <- 2006:2007
 ACS_COUNTS   <- c("ag_total", "ag_fb", "ag_usb", "ag_noncit",
                   "ag_ws", "ag_nonws", "ag_usb_ws", "ag_usb_nonws", "ag_fb_ws", "ag_ws_gq", "ag_fb_ws_gq",
-                  "ag_total_hh", "ag_fb_hh", "ag_usb_hh", "ag_noncit_hh")
+                  "ag_total_hh", "ag_fb_hh", "ag_usb_hh", "ag_noncit_hh", "ag_ws_hh")
 
 # PUMA -> county crosswalks, built once and cached (downloads ~50 census files + 2010 tract populations)
 xwalk_file <- file.path(RAW_DIR, "puma_county_crosswalks.rds")
@@ -739,6 +666,7 @@ if (length(acs_years_missing) > 0) {
           ag_fb_hh     = sum(perwt * (ag & hh & citizen %in% 2:5)),
           ag_usb_hh    = sum(perwt * (ag & hh & citizen %in% 0:1)),
           ag_noncit_hh = sum(perwt * (ag & hh & citizen %in% 3:5)),
+          ag_ws_hh     = sum(perwt * (ag & hh & ws)),
           .groups = "drop"
         )
     }) |>
@@ -784,9 +712,7 @@ message(sprintf(
 
 ## 13. long panel for the ACS labor outcomes ##-----------------------------------------------------
 # county x year (2005-2022) analysis panel: the same counties as main, with the ACS ag workforce
-# outcomes, the early/late indicator and the het indicators attached, ready for the long-panel
-# event study and DDD in 02_models.r. early_activator here is het_early (one value per county).
-# where an independent city shares its name with a county (e.g. VA Fairfax), the county is kept,
+# outcomes and the candidate vulnerability measures attached. where an independent city shares its name with a county (e.g. VA Fairfax), the county is kept,
 # matching how the ag census names counties.
 acs_keyed <- acs_ag_panel |>
   arrange(is_city) |>
@@ -798,7 +724,6 @@ acs_panel <- main |>
   mutate(county_key = county_key(county)) |>
   inner_join(acs_keyed, by = c("state", "county_key")) |>
   left_join(het_measures |> select(-county), by = c("state", "county_key")) |>
-  mutate(early_activator = het_early, first_detainer_year = het_early_val) |>
   select(-county_key)
 stopifnot(!anyDuplicated(acs_panel[c("county_id", "year")]))
 
@@ -878,7 +803,6 @@ stopifnot(abs(cz_total_gap) < 0.002)
 
 cz_county_inputs <- cw_cty_cz |>
   inner_join(county_pop_fips, by = "county_fips") |>
-  left_join(activation_fips |> transmute(county_fips, first_detainer_year = year(activation_date)), by = "county_fips") |>
   left_join(
     het_measures |> inner_join(name_to_fips, by = c("state", "county_key")) |>
       select(county_fips, noncit_share = het_noncit_val, undoc_share = het_undoc_val),
@@ -898,8 +822,6 @@ cz_het <- cz_county_inputs |>
   group_by(czone) |>
   summarise(
     cz_pop          = sum(pop),
-    early_share     = sum(pop[!is.na(first_detainer_year) & first_detainer_year <= 2011]) /
-                      sum(pop[!is.na(first_detainer_year)]),
     het_noncit_val    = weighted.mean(noncit_share, pop, na.rm = TRUE),
     het_undoc_val     = weighted.mean(undoc_share,  pop, na.rm = TRUE),
     het_jail_cap_val  = sum(jail_beds, na.rm = TRUE) / sum(pop) * 1000,
@@ -908,10 +830,7 @@ cz_het <- cz_county_inputs |>
     state           = fips_codes$state[match(substr(county_fips[which.max(pop)], 1, 2), fips_codes$state_code)],
     .groups = "drop"
   ) |>
-  mutate(
-    across(c(early_share, het_noncit_val, het_undoc_val, het_jail_flow_val), \(x) if_else(is.nan(x), NA_real_, x)),
-    early_activator = as.integer(early_share >= CZ_EARLY_SHARE)
-  )
+  mutate(across(c(het_noncit_val, het_undoc_val, het_jail_flow_val), \(x) if_else(is.nan(x), NA_real_, x)))
 
 # sample: CZs containing at least one county in main
 cz_sample <- main |>
@@ -920,15 +839,6 @@ cz_sample <- main |>
   inner_join(name_to_fips, by = c("state", "county_key")) |>
   inner_join(cw_cty_cz, by = "county_fips") |>
   distinct(czone)
-
-# high/low splits at the CZ level, using het_cz_cuts (NA -> median across sample CZs)
-cz_het_sample <- cz_het |> semi_join(cz_sample, by = "czone")
-for (m in names(het_cz_cuts)) {
-  val <- cz_het[[paste0("het_", m, "_val")]]
-  cut <- if (is.na(het_cz_cuts[[m]])) median(cz_het_sample[[paste0("het_", m, "_val")]], na.rm = TRUE) else het_cz_cuts[[m]]
-  het_cz_cuts[[m]] <- cut
-  cz_het[[paste0("het_", m)]] <- as.integer(val >= cut)
-}
 
 acs_cz_panel <- acs_cz_year |>
   semi_join(cz_sample, by = "czone") |>
@@ -944,11 +854,8 @@ acs_cz_panel <- acs_cz_year |>
   mutate(cz_id = as.character(czone))
 stopifnot(!anyDuplicated(acs_cz_panel[c("czone", "year")]))
 
-message(sprintf("ACS CZ panel: %d CZs x %d years; %d early / %d late; CZ cuts: %s; allocation gap %.4f%%",
-                n_distinct(acs_cz_panel$czone), n_distinct(acs_cz_panel$year),
-                sum(cz_het_sample$early_share >= CZ_EARLY_SHARE, na.rm = TRUE),
-                sum(cz_het_sample$early_share <  CZ_EARLY_SHARE, na.rm = TRUE),
-                paste(names(het_cz_cuts), signif(het_cz_cuts, 3), sep = "=", collapse = ", "), 100 * cz_total_gap))
+message(sprintf("ACS CZ panel: %d CZs x %d years; allocation gap %.4f%%",
+                n_distinct(acs_cz_panel$czone), n_distinct(acs_cz_panel$year), 100 * cz_total_gap))
 
 ## 15. QCEW ag employment long panel ##------------------------------------------------------------
 # yearly county annual-average employment from the BLS QCEW (employer UI filings), private ownership,
@@ -1001,7 +908,6 @@ qcew_panel <- main |>
   left_join(acs_ag_panel |> distinct(county_fips, wa_pop_base), by = "county_fips") |>
   mutate(across(all_of(QCEW_VARS), \(x) x / wa_pop_base, .names = "{.col}_share")) |>
   left_join(het_measures |> select(-county), by = c("state", "county_key")) |>
-  mutate(early_activator = het_early, first_detainer_year = het_early_val) |>
   select(-county_key)
 stopifnot(!anyDuplicated(qcew_panel[c("county_id", "year")]))
 
@@ -1178,7 +1084,6 @@ crop_panel <- main |>
   inner_join(cropmix_county_year, by = "county_fips") |>
   add_crop_shares("county_fips") |>
   left_join(het_measures |> select(-county), by = c("state", "county_key")) |>
-  mutate(early_activator = het_early, first_detainer_year = het_early_val) |>
   select(-county_key)
 stopifnot(!anyDuplicated(crop_panel[c("county_id", "year")]))
 
@@ -1315,9 +1220,7 @@ agc_cz_panel  <- left_join(agc_cz_panel,  cexp_cz, by = "czone")
 ####################################################################################################
 
 saveRDS(main,                    file.path(CLEAN_DIR, "main.rds"))
-saveRDS(sc_county,               file.path(CLEAN_DIR, "sc_county.rds"))
 saveRDS(het_measures,            file.path(CLEAN_DIR, "het_measures.rds"))
-saveRDS(het_config,              file.path(CLEAN_DIR, "het_config.rds"))
 saveRDS(removals_county,         file.path(CLEAN_DIR, "removals_county.rds"))
 saveRDS(removals_county_year,    file.path(CLEAN_DIR, "removals_county_year.rds"))
 saveRDS(cw_cty_cz,               file.path(CLEAN_DIR, "cw_cty_cz.rds"))
