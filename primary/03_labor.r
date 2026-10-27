@@ -8,7 +8,8 @@
 ##       2005-2022, using the shared event-study specification in 00_setup.r.
 ## reads:  dropbox kieran/data/clean/{acs_cz_panel, acs_panel, qcew_cz_panel, qcew_panel}.rds (from
 ##         01_clean.r), kieran/output/vulnerability_choice.csv (from 02_vulnerability.r)
-## writes: dropbox kieran/output/coefs/labor_*.csv, output/tables/labor_*.tex, figures/labor/*.png
+## writes: dropbox kieran/output/coefs/labor_*.csv, output/tables/labor_*.tex, figures/labor/*.png,
+##         figures/diagnostics/acs_qcew_*.png
 ####################################################################################################
 
 ####################################################################################################
@@ -96,28 +97,42 @@ write_csv(labor_het, file.path(COEFS_DIR, "labor_heterogeneity.csv"))
 labor_terc <- es_terciles(acs_cz, LABOR_OUTCOMES, "cz_id", HET_DIMS)
 write_csv(labor_terc, file.path(COEFS_DIR, "labor_terciles.csv"))
 
-## by vulnerability quartile, counties and CZs ##---------------------------------------------------
+## by vulnerability quartile, with and without the population control, counties and CZs ##----------
 # the year-by-year exposure effect within each quartile of vulnerability (es_group_fit), so the ACS
 # workforce and QCEW job series can be read side by side for the most vulnerable places. the effects
 # are concentrated in the top quartile and in the most agricultural counties, which the linear
 # interaction and CZ terciles average away.
-N_QUART <- 4
-quart_mods <- expand_grid(level = c("county", "cz"), outcome = names(LABOR_OUTCOMES)) |>
-  mutate(mod = map2(level, outcome, \(l, o) {
-    if (l == "county") es_group_fit(acs_county, LABOR_OUTCOMES[[o]], "county_id", VULN, N_QUART)
-    else               es_group_fit(acs_cz,     LABOR_OUTCOMES[[o]], "cz_id",     VULN, N_QUART)
-  }))
+# each model is fit pooled and by quartile, with the main controls ("after") and without log
+# population x year ("before"). early activators were larger places with different ag-employment
+# trends: without the control the ACS workforce rises and QCEW jobs fall with exposure in every
+# quartile; with it the pooled effects go to about zero and the changes are confined to the top
+# quartile. both models use the same units (those with log population).
+N_QUART    <- 4
+POP_MODELS <- list(before = setdiff(ES_CONTROLS, "log_pop_2010"), after = ES_CONTROLS)
+quart_panels <- list(county = list(d = filter(acs_county, !is.na(log_pop_2010)), unit = "county_id"),
+                     cz     = list(d = filter(acs_cz,     !is.na(log_pop_2010)), unit = "cz_id"))
 
+quart_mods <- expand_grid(level = names(quart_panels), outcome = names(LABOR_OUTCOMES), model = names(POP_MODELS)) |>
+  mutate(pooled = pmap(list(level, outcome, model), \(l, o, m)
+                       fit_es(quart_panels[[l]]$d, LABOR_OUTCOMES[[o]], quart_panels[[l]]$unit, controls = POP_MODELS[[m]])),
+         quart  = pmap(list(level, outcome, model), \(l, o, m)
+                       es_group_fit(quart_panels[[l]]$d, LABOR_OUTCOMES[[o]], quart_panels[[l]]$unit, VULN, N_QUART, controls = POP_MODELS[[m]])))
+
+# year-by-year coefficients: quartile 1-4 from the quartile model, quartile NA from the pooled model
 labor_quart_coefs <- quart_mods |>
-  mutate(c = map(mod, \(m) map(seq_len(N_QUART), \(g) es_coefs(m, paste0("x_g", g)) |> mutate(quartile = g)) |> list_rbind())) |>
-  select(level, outcome, c) |>
+  mutate(c = map2(pooled, quart, \(mp, mq) bind_rows(
+    es_coefs(mp),
+    map(seq_len(N_QUART), \(g) es_coefs(mq, paste0("x_g", g)) |> mutate(quartile = g)) |> list_rbind()))) |>
+  select(level, outcome, model, c) |>
   unnest(c)
 write_csv(labor_quart_coefs, file.path(COEFS_DIR, "labor_quartile_coefs.csv"))
 
 labor_quart_summary <- quart_mods |>
-  mutate(s = map(mod, \(m) bind_rows(map(seq_len(N_QUART), \(g) es_summary(m, paste0("x_g", g)) |> mutate(group = paste0("Q", g))),
-                                     es_group_gap(m, N_QUART) |> mutate(group = paste0("Q", N_QUART, " - Q1"))))) |>
-  select(level, outcome, s) |>
+  mutate(s = map2(pooled, quart, \(mp, mq) bind_rows(
+    es_summary(mp) |> mutate(group = "All units"),
+    map(seq_len(N_QUART), \(g) es_summary(mq, paste0("x_g", g)) |> mutate(group = paste0("Q", g))),
+    es_group_gap(mq, N_QUART) |> mutate(group = paste0("Q", N_QUART, " - Q1"))))) |>
+  select(level, outcome, model, s) |>
   unnest(s)
 write_csv(labor_quart_summary, file.path(COEFS_DIR, "labor_quartile_summary.csv"))
 
@@ -163,14 +178,50 @@ ggsave(fig_path("labor", "labor_terciles.png"), p, width = 22, height = 5, dpi =
 # left column ACS workforce, right column QCEW jobs: interleaving the outcomes pairs them by row
 ACS_LABELS  <- str_subset(names(LABOR_OUTCOMES), "ACS$")
 QCEW_LABELS <- str_subset(names(LABOR_OUTCOMES), "QCEW")
+PAIRED      <- facet_wrap(~outcome, scales = "free_y", ncol = 2)
 COL_QUART   <- c(COL_LIGHT, COL_BAR, COL_MID, COL_POINT)
-walk(c("county", "cz"), \(l) {
-  p <- labor_quart_coefs |>
-    filter(level == l) |>
-    mutate(outcome  = factor(outcome, levels = c(rbind(ACS_LABELS, QCEW_LABELS))),
-           quartile = factor(quartile, levels = 1:4, labels = c("Q1 (least vulnerable)", "Q2", "Q3", "Q4 (most vulnerable)"))) |>
+LEVEL_LABEL <- c(county = "Counties", cz = "Commuting Zones")
+MODEL_LABEL <- c(before = "Before: border distance + recession x year", after = "After: + log 2010 population x year")
+quart_plot_data <- labor_quart_coefs |>
+  mutate(outcome = factor(outcome, levels = c(rbind(ACS_LABELS, QCEW_LABELS))))
+
+walk(names(LEVEL_LABEL), \(l) {
+  p <- quart_plot_data |>
+    filter(level == l, model == "after", !is.na(quartile)) |>
+    mutate(quartile = factor(quartile, levels = 1:4, labels = c("Q1 (least vulnerable)", "Q2", "Q3", "Q4 (most vulnerable)"))) |>
     es_plot(sprintf("Effect of One More Year of SC Exposure by Quartile of Baseline %s, %s (95%% CI)\nLeft: ACS ag workforce, by residence. Right: QCEW formal ag payroll jobs, by workplace.",
-                    VULN_LABEL, if (l == "county") "Counties" else "Commuting Zones"),
-            Y_LAB, color = "quartile", palette = COL_QUART, facet = facet_wrap(~outcome, scales = "free_y", ncol = 2))
+                    VULN_LABEL, LEVEL_LABEL[[l]]),
+            Y_LAB, color = "quartile", palette = COL_QUART, facet = PAIRED)
   ggsave(fig_path("labor", sprintf("labor_quartiles_%s.png", l)), p, width = 13, height = 13, dpi = 300)
+})
+
+## 6. diagnostics: with and without the population control ##--------------------------------------
+# pooled: both models overlaid. by quartile: one figure per model, with each outcome's y range shared
+# between the two so they compare directly.
+walk(names(LEVEL_LABEL), \(l) {
+  p <- quart_plot_data |>
+    filter(level == l, is.na(quartile)) |>
+    mutate(model = factor(MODEL_LABEL[model], levels = MODEL_LABEL)) |>
+    es_plot(sprintf("Effect of One More Year of SC Exposure, Before and After the Population Control: %s (95%% CI)\nLeft: ACS ag workforce, by residence. Right: QCEW formal ag payroll jobs, by workplace.",
+                    LEVEL_LABEL[[l]]),
+            Y_LAB, color = "model", palette = c(COL_BAR, COL_POINT), facet = PAIRED)
+  ggsave(fig_path("diagnostics", sprintf("acs_qcew_pooled_%s.png", l)), p, width = 13, height = 13, dpi = 300)
+
+  y_range <- quart_plot_data |>
+    filter(level == l, !is.na(quartile)) |>
+    group_by(outcome) |>
+    summarise(y = list(range(c(conf.low, conf.high))), .groups = "drop") |>
+    unnest(y) |>
+    mutate(year = ES_REF)
+  walk(names(MODEL_LABEL), \(m) {
+    p <- quart_plot_data |>
+      filter(level == l, model == m, !is.na(quartile)) |>
+      mutate(quartile = factor(quartile, levels = 1:4, labels = c("Q1 (least vulnerable)", "Q2", "Q3", "Q4 (most vulnerable)"))) |>
+      es_plot(sprintf("Effect of One More Year of SC Exposure by Quartile of Baseline %s, %s (95%% CI)\n%s",
+                      VULN_LABEL, LEVEL_LABEL[[l]], MODEL_LABEL[[m]]),
+              Y_LAB, color = "quartile", palette = COL_QUART, facet = PAIRED) +
+      geom_blank(data = y_range, aes(x = year, y = y), inherit.aes = FALSE) +
+      labs(caption = "Left: ACS ag workforce, by residence. Right: QCEW formal ag payroll jobs, by workplace. y-axes match across the before and after figures.")
+    ggsave(fig_path("diagnostics", sprintf("acs_qcew_quartiles_%s_%s.png", l, m)), p, width = 13, height = 13, dpi = 300)
+  })
 })

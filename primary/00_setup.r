@@ -93,10 +93,12 @@ es_sample <- function(data, outcome, unit, vuln = NULL, controls = ES_CONTROLS) 
   d
 }
 
-# baseline: FALSE, TRUE (all of ES_BASELINE) or a character vector of baseline variables to add x year
-fit_es <- function(data, outcome, unit, vuln = NULL, time_fe = "state^year", cluster = unit, baseline = FALSE) {
+# baseline: FALSE, TRUE (all of ES_BASELINE) or a character vector of baseline variables to add x year.
+# `controls` replaces ES_CONTROLS (e.g. to drop log population for the population-control diagnostics).
+fit_es <- function(data, outcome, unit, vuln = NULL, time_fe = "state^year", cluster = unit, baseline = FALSE,
+                   controls = ES_CONTROLS) {
   extra    <- if (isTRUE(baseline)) ES_BASELINE else if (is.character(baseline)) baseline else NULL
-  controls <- c(ES_CONTROLS, setdiff(extra, vuln))
+  controls <- c(controls, setdiff(extra, vuln))
   d   <- es_sample(data, outcome, unit, vuln, controls)
   rhs <- c(sprintf("i(year, exposure, ref = %d)", ES_REF),
            if (!is.null(vuln)) sprintf("i(year, %s, ref = %d)", c("vz", "xv"), ES_REF),
@@ -341,13 +343,13 @@ es_terciles <- function(data, outcomes, unit, dims, time_fe = "state^year", base
 # gives the per-year exposure effect in each year and group, with each group's own year effects:
 #   y = sum_g sum_s b_gs (exposure x 1{group = g} x 1{t=s}) + controls x year + unit FE + time_fe + group x year
 # b_gs is read with es_coefs(m, "x_g<g>") / es_summary(m, "x_g<g>"); es_group_gap gives b_n - b_1.
-es_group_fit <- function(data, outcome, unit, v, n = 4, time_fe = "state^year") {
-  d   <- es_sample(data, outcome, unit, controls = c(ES_CONTROLS, v))
+es_group_fit <- function(data, outcome, unit, v, n = 4, time_fe = "state^year", controls = ES_CONTROLS) {
+  d   <- es_sample(data, outcome, unit, controls = c(controls, v))
   grp <- d[c(unit, v)] |> distinct()
   grp$grp <- ntile(grp[[v]], n)
   d <- left_join(d, grp[c(unit, "grp")], by = unit)
   for (g in seq_len(n)) d[[paste0("x_g", g)]] <- d$exposure * (d$grp == g)
-  rhs <- sprintf("i(year, %s, ref = %d)", c(paste0("x_g", seq_len(n)), ES_CONTROLS), ES_REF)
+  rhs <- sprintf("i(year, %s, ref = %d)", c(paste0("x_g", seq_len(n)), controls), ES_REF)
   feols(as.formula(sprintf("%s ~ %s | %s + %s + grp^year", outcome, paste(rhs, collapse = " + "), unit, time_fe)),
         data = d, cluster = as.formula(paste0("~", unit)))
 }
