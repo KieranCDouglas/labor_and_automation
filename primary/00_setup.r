@@ -193,7 +193,8 @@ es_main_coefs <- function(data, outcomes, unit, vuln) {
 
 # the robustness set: each row changes one thing from the main specification. the alternative
 # vulnerability measure only changes the interaction, so it has no main-effect row. `suffix` swaps in
-# a variant of the outcome (outcome_share -> outcome<suffix>_share); `baseline` adds ES_BASELINE x year.
+# a variant of the outcome (outcome_share -> outcome<suffix>_share), and outcomes without that variant
+# are skipped in that row; `baseline` adds ES_BASELINE x year.
 es_spec_set <- function(vuln, vuln_alt) {
   tribble(
     ~spec,                                     ~data,    ~unit,       ~time_fe,     ~cluster,    ~vuln,    ~suffix, ~baseline,
@@ -212,6 +213,7 @@ es_robustness <- function(specs, panels, outcomes) {
     expand_grid(outcome = names(outcomes)) |>
     mutate(res = pmap(list(data, unit, time_fe, cluster, vuln, outcome, spec, suffix, baseline), \(dt, u, fe, cl, v, o, s, sfx, bl) {
       y   <- if (sfx == "") outcomes[[o]] else str_replace(outcomes[[o]], "_share$", paste0(sfx, "_share"))
+      if (!y %in% names(panels[[dt]])) return(NULL)
       out <- es_summary(fit_es(panels[[dt]], y, u, vuln = v, time_fe = fe, cluster = cl, baseline = bl), "xv")
       if (!str_starts(s, "Vulnerability")) {
         out <- bind_rows(es_summary(fit_es(panels[[dt]], y, u, time_fe = fe, cluster = cl, baseline = bl), "exposure"), out)
@@ -333,6 +335,31 @@ es_terciles <- function(data, outcomes, unit, dims, time_fe = "state^year", base
   grid |>
     unnest(res) |>
     mutate(dim_label = factor(dims[dim], levels = dims), outcome = factor(outcome, levels = names(outcomes)))
+}
+
+# event study by quantile group: units are split into n groups of dimension v (by rank), and one model
+# gives the per-year exposure effect in each year and group, with each group's own year effects:
+#   y = sum_g sum_s b_gs (exposure x 1{group = g} x 1{t=s}) + controls x year + unit FE + time_fe + group x year
+# b_gs is read with es_coefs(m, "x_g<g>") / es_summary(m, "x_g<g>"); es_group_gap gives b_n - b_1.
+es_group_fit <- function(data, outcome, unit, v, n = 4, time_fe = "state^year") {
+  d   <- es_sample(data, outcome, unit, controls = c(ES_CONTROLS, v))
+  grp <- d[c(unit, v)] |> distinct()
+  grp$grp <- ntile(grp[[v]], n)
+  d <- left_join(d, grp[c(unit, "grp")], by = unit)
+  for (g in seq_len(n)) d[[paste0("x_g", g)]] <- d$exposure * (d$grp == g)
+  rhs <- sprintf("i(year, %s, ref = %d)", c(paste0("x_g", seq_len(n)), ES_CONTROLS), ES_REF)
+  feols(as.formula(sprintf("%s ~ %s | %s + %s + grp^year", outcome, paste(rhs, collapse = " + "), unit, time_fe)),
+        data = d, cluster = as.formula(paste0("~", unit)))
+}
+
+# average post-ES_REF difference between the top and bottom group of an es_group_fit model, with its SE
+es_group_gap <- function(mod, n = 4) {
+  b    <- coef(mod)
+  yrs  <- as.integer(str_match(names(b), "^year::(\\d{4}):x_g1$")[, 2])
+  post <- sort(yrs[!is.na(yrs) & yrs > ES_REF])
+  w    <- c(set_names(rep(1, length(post)), sprintf("year::%d:x_g%d", post, n)),
+            set_names(rep(-1, length(post)), sprintf("year::%d:x_g1", post))) / length(post)
+  tibble(post_avg = sum(w * b[names(w)]), post_se = sqrt(drop(t(w) %*% vcov(mod)[names(w), names(w)] %*% w)))
 }
 
 # population size band: tercile of log 2010 population across the panel's units

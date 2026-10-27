@@ -13,7 +13,7 @@ Run in order:
 | `primary/00_setup.r` | Paths, figure palette, and the shared event-study estimator and robustness set | — |
 | `primary/01_clean.r` | Cleans raw data and builds every analysis panel (county and commuting zone) | `data/clean/*.rds` |
 | `primary/02_vulnerability.r` | Picks the vulnerability measure: the baseline characteristic that best predicts SC removals | `output/vulnerability_choice.csv`, `figures/vulnerability/` |
-| `primary/03_labor.r` | Q1: US-born vs foreign-born ag employment (ACS) | `figures/labor/`, `output/coefs/labor_*` |
+| `primary/03_labor.r` | Q1: US-born vs foreign-born ag employment (ACS) and formal ag payroll jobs by industry (QCEW) | `figures/labor/`, `output/coefs/labor_*` |
 | `primary/04_technology.r` | Q2: mechanization, hired labor and crop mix (Census of Agriculture) | `figures/technology/`, `output/coefs/technology_*` |
 | `primary/05_informality.r` | Q3: formal (QCEW) vs informal (ACS) ag work, self-employment, guestworker proxy | `figures/informality/`, `output/coefs/informality_*` |
 
