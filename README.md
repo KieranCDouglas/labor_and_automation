@@ -35,5 +35,4 @@ labor_and_automation/
 │   ├── agcensus_api.R      # USDA Census of Agriculture API pull
 │   └── writing/
 │       └── main.tex        # manuscript (synced with Overleaf)
-└── figs/preliminary/       # early exploratory figures
 ```
