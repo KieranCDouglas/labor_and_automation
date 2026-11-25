@@ -13,11 +13,11 @@ Run in order:
 | `primary/00_setup.r` | Paths, figure palette, and the shared event-study estimator and robustness set | — |
 | `primary/01_clean.r` | Cleans raw data and builds every analysis panel (county and commuting zone) | `data/clean/*.rds` |
 | `primary/02_vulnerability.r` | Picks the vulnerability measure: the baseline characteristic that best predicts SC removals | `output/vulnerability_choice.csv`, `figures/vulnerability/` |
-| `primary/03_labor.r` | Q1: US-born vs foreign-born ag employment (ACS) and formal ag payroll jobs by industry (QCEW), by vulnerability quartile, with and without the population control | `figures/labor/`, `figures/diagnostics/`, `output/coefs/labor_*` |
+| `primary/03_labor.r` | Q1: US-born vs foreign-born ag employment (ACS) and formal ag payroll jobs by industry (QCEW), by vulnerability quartile, with and without the population control | `figures/labor/`, `figures/robustness/`, `output/coefs/labor_*` |
 | `primary/04_technology.r` | Q2: mechanization, hired labor and crop mix (Census of Agriculture) | `figures/technology/`, `output/coefs/technology_*` |
 | `primary/05_informality.r` | Q3: formal (QCEW) vs informal (ACS) ag work, self-employment, guestworker proxy | `figures/informality/`, `output/coefs/informality_*` |
 
-Every outcome script uses the same specification: an event study in years of SC exposure (years between a place's activation and the last activation), interacted with year, with unit and state × year fixed effects, border-distance, Great Recession and log-population controls (each × year), and an interaction with vulnerability (2000 Hispanic noncitizen share, per SD). Each also reports the same robustness set.
+Every outcome script uses the same specification: an event study in years of SC exposure (years between a place's activation and the last activation), interacted with year, with unit and state × year fixed effects, border-distance, Great Recession and log-population controls (each × year), and an interaction with vulnerability (2000 Hispanic noncitizen share, per SD). Counts of workers and jobs are estimated by PPML (coefficients in log points); shares are estimated by OLS in percentage points. Each also reports the same robustness set.
 
 `primary/agcensus_api.R` holds the USDA NASS QuickStats pulls that produced the raw Census of Agriculture files. It is run by hand, not as part of the pipeline.
 

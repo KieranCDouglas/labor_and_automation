@@ -1,13 +1,14 @@
 ####################################################################################################
 ## 05: informality (Q3)
-## last edited: 10/26/2026
+## last edited: 11/18/2026
 ## by kieran
 ## does: whether SC exposure shifted ag work away from formal payroll employment, and whether that
 ##       differs with vulnerability. formal jobs (QCEW: employer unemployment-insurance filings) are
-##       compared with the ACS count of people working in ag (survey, by residence), each as growth
-##       against its own 2006-07 level, since the two cover different workers and places. also
-##       non-wage ag work (ACS) and the group-quarters guestworker proxy (ACS). commuting zones,
-##       2005-2022, using the shared event-study specification in 00_setup.r.
+##       compared with the ACS count of people working in ag (survey, by residence), each as a count
+##       estimated by PPML (proportional changes), since the two cover different workers and places;
+##       the gap is ln ACS wage workers minus ln QCEW jobs. also non-wage ag work (ACS) and the
+##       group-quarters guestworker proxy (ACS). commuting zones, 2005-2022, using the shared
+##       event-study specification in 00_setup.r.
 ## reads:  dropbox kieran/data/clean/{acs_cz_panel, qcew_cz_panel, acs_panel, qcew_panel}.rds (from
 ##         01_clean.r), kieran/output/vulnerability_choice.csv (from 02_vulnerability.r)
 ## writes: dropbox kieran/output/coefs/informality_*.csv, output/tables/informality_*.tex,
@@ -33,51 +34,38 @@ VULN        <- VULN_CHOICE$measure
 VULN_LABEL  <- str_remove(VULN_CHOICE$label, ", \\d{4}$")
 VULN_ALT    <- "het_noncit_val"   # robustness: the runner-up measure from 02_vulnerability.r
 
-# growth outcomes are % changes against the unit's own 2006-07 level, kept only where that level is at
-# least REL_MIN_BASE workers (ACS) or jobs (QCEW) so small bases do not explode, and trimmed at the
-# 1st and 99th percentiles. the gap is ACS growth minus QCEW growth in the same unit and year:
-# positive means ag work grew faster than the formal payroll jobs employers report.
-REL_MIN_BASE <- 100
-# QCEW robustness: CZs where imputed cells (01_clean.r section 16) are under this share of 2005-07
+# counts are estimated by PPML (log points). the gap is ln ACS wage workers minus ln QCEW NAICS 11 jobs
+# in the same unit and year (OLS), for units with both positive in every year: positive means ag work
+# grew faster than the formal payroll jobs employers report.
+# QCEW robustness: CZs where imputed cells (01_clean.r section 15) are under this share of 2005-07
 # NAICS 11 employment
 MAX_IMPUTED  <- 0.25
 
-INFORMALITY_OUTCOMES <- c(
-  "Formal Ag Jobs, QCEW (% vs 2006-07)"                       = "qcew_rel",
-  "Ag Wage Workers, ACS (% vs 2006-07)"                       = "acs_ws_rel",
-  "Gap: ACS Minus QCEW Growth (pp)"                            = "gap_rel",
-  "Farm Labor Contractors & Support, QCEW (% vs 2006-07)"     = "qcew115_rel",
-  "Self-Employed & Unpaid Family, ACS (pp of working-age pop.)" = "nonws_pp",
-  "Wage Workers in Group Quarters, ACS (pp of working-age pop.)" = "ws_gq_pp"
+INFORMALITY_COUNTS <- c(
+  "Formal Ag Jobs, QCEW (NAICS 11)"                   = "qcew_11",
+  "Ag Wage Workers, ACS"                              = "ag_ws",
+  "Farm Labor Contractors & Support, QCEW (NAICS 115)" = "qcew_115",
+  "Self-Employed & Unpaid Family Ag Workers, ACS"     = "ag_nonws",
+  "Ag Wage Workers in Group Quarters, ACS"            = "ag_ws_gq"
 )
+INFORMALITY_GAP <- c("Gap: ln ACS Wage Workers - ln QCEW Jobs" = "gap_ln")
+OUTCOME_LEVELS  <- c(names(INFORMALITY_COUNTS)[1:2], names(INFORMALITY_GAP), names(INFORMALITY_COUNTS)[3:5])
 
 ####################################################################################################
 ### load data ###
 ####################################################################################################
 
-# growth against the unit's own 2006-07 level (NA where that level is below REL_MIN_BASE)
-growth <- function(x, year) {
-  base <- mean(x[year %in% 2006:2007])
-  if (is.na(base) || base < REL_MIN_BASE) NA_real_ else 100 * (x / base - 1)
-}
-trim <- \(x) pmin(pmax(x, quantile(x, 0.01, na.rm = TRUE)), quantile(x, 0.99, na.rm = TRUE))
-
 # the ACS panel (treatment, controls, vulnerability and reliance measures) with the QCEW job counts
 # joined by unit and year. restricted to units with the vulnerability measure, so the main effect and
-# the vulnerability interaction are estimated on the same units.
+# the vulnerability interaction are estimated on the same units. the gap is defined only for units
+# with positive ACS wage workers and QCEW jobs in every year, so its sample does not change over time.
 informality_panel <- function(acs, qcew, unit) {
   acs |>
     filter(!is.na(.data[[VULN]])) |>
     left_join(qcew |> select(all_of(c(unit, "year")), qcew_11, qcew_115, any_of("qcew_11_imputed")), by = c(unit, "year")) |>
     group_by(.data[[unit]]) |>
-    mutate(qcew_rel    = growth(qcew_11, year),
-           qcew115_rel = growth(qcew_115, year),
-           acs_ws_rel  = growth(ag_ws, year)) |>
-    ungroup() |>
-    mutate(across(c(qcew_rel, qcew115_rel, acs_ws_rel), trim),
-           gap_rel  = acs_ws_rel - qcew_rel,
-           nonws_pp = 100 * ag_nonws_share,
-           ws_gq_pp = 100 * ag_ws_gq_share)
+    mutate(gap_ln = if (all(!is.na(ag_ws) & ag_ws > 0 & !is.na(qcew_11) & qcew_11 > 0)) log(ag_ws) - log(qcew_11) else NA_real_) |>
+    ungroup()
 }
 
 inf_cz     <- informality_panel(readRDS(file.path(CLEAN_DIR, "acs_cz_panel.rds")), readRDS(file.path(CLEAN_DIR, "qcew_cz_panel.rds")), "cz_id")
@@ -91,15 +79,17 @@ low_imputed <- inf_cz |>
   filter(!is.na(imp), imp < MAX_IMPUTED)
 inf_panels <- list(cz = inf_cz, county = inf_county, cz_lowimp = semi_join(inf_cz, low_imputed, by = "cz_id"))
 
-message(sprintf("informality: %d CZs (%d with growth outcomes for both sources; %d with < %.0f%% of QCEW jobs imputed), %d counties",
-                n_distinct(inf_cz$cz_id), n_distinct(inf_cz$cz_id[!is.na(inf_cz$gap_rel)]), nrow(low_imputed),
+message(sprintf("informality: %d CZs (%d with the gap; %d with < %.0f%% of QCEW jobs imputed), %d counties",
+                n_distinct(inf_cz$cz_id), n_distinct(inf_cz$cz_id[!is.na(inf_cz$gap_ln)]), nrow(low_imputed),
                 100 * MAX_IMPUTED, n_distinct(inf_county$county_id)))
 
 ####################################################################################################
 ### main specification: commuting zones ###
 ####################################################################################################
 
-inf_coefs <- es_main_coefs(inf_cz, INFORMALITY_OUTCOMES, "cz_id", VULN)
+inf_coefs <- bind_rows(es_main_coefs(inf_cz, INFORMALITY_COUNTS, "cz_id", VULN, family = "pois"),
+                       es_main_coefs(inf_cz, INFORMALITY_GAP, "cz_id", VULN)) |>
+  mutate(outcome = factor(outcome, levels = OUTCOME_LEVELS))
 write_csv(inf_coefs, file.path(COEFS_DIR, "informality_coefs.csv"))
 
 ####################################################################################################
@@ -110,17 +100,19 @@ write_csv(inf_coefs, file.path(COEFS_DIR, "informality_coefs.csv"))
 # and the ACS outcomes are allocated from PUMAs.
 specs <- es_spec_set(VULN, VULN_ALT) |>
   add_row(spec = paste0("QCEW mostly published (< ", 100 * MAX_IMPUTED, "% imputed)"), data = "cz_lowimp", unit = "cz_id",
-          time_fe = "state^year", cluster = "cz_id", vuln = VULN, suffix = "", baseline = FALSE, .before = 6)
+          time_fe = "state^year", cluster = "cz_id", vuln = VULN, suffix = "", baseline = FALSE, .before = 7)
 
-inf_summary <- es_robustness(specs, inf_panels, INFORMALITY_OUTCOMES)
+inf_summary <- bind_rows(es_robustness(specs, inf_panels, INFORMALITY_COUNTS, family = "pois"),
+                         es_robustness(specs, inf_panels, INFORMALITY_GAP)) |>
+  mutate(outcome = factor(outcome, levels = OUTCOME_LEVELS))
 write_csv(inf_summary, file.path(COEFS_DIR, "informality_summary.csv"))
 
-# average post-2007 effect per year of exposure, in each outcome's units (2005-06 are the pre-period years)
-es_main_table(inf_summary, file.path(TABLES_DIR, "informality_main.tex"), scale = 1)
+# average post-2007 effect per year of exposure, in log points x 100 (2005-06 are the pre-period years)
+es_main_table(inf_summary, file.path(TABLES_DIR, "informality_main.tex"), scale = 100)
 
 inf_summary |>
   transmute(spec, outcome, term = if_else(term == "exposure", "per year", "x vuln"),
-            cell = sprintf("%7.3f (%.3f) pre p %.2f", post_avg, post_se, pre_p)) |>
+            cell = sprintf("%7.2f (%.2f) pre p %.2f", 100 * post_avg, 100 * post_se, pre_p)) |>
   pivot_wider(names_from = term, values_from = cell) |>
   print(n = Inf, width = Inf)
 
@@ -131,18 +123,22 @@ inf_summary |>
 # vulnerability, and pre-SC reliance on immigrant and on hired farm labor (ES_RELIANCE).
 HET_DIMS <- c(set_names(paste0("Vulnerability (", VULN_CHOICE$label, ")"), VULN), ES_RELIANCE)
 
-inf_het <- es_heterogeneity(inf_cz, INFORMALITY_OUTCOMES, "cz_id", HET_DIMS)
+inf_het <- bind_rows(es_heterogeneity(inf_cz, INFORMALITY_COUNTS, "cz_id", HET_DIMS, family = "pois"),
+                     es_heterogeneity(inf_cz, INFORMALITY_GAP, "cz_id", HET_DIMS)) |>
+  mutate(outcome = factor(outcome, levels = OUTCOME_LEVELS))
 write_csv(inf_het, file.path(COEFS_DIR, "informality_heterogeneity.csv"))
-inf_terc <- es_terciles(inf_cz, INFORMALITY_OUTCOMES, "cz_id", HET_DIMS)
+inf_terc <- bind_rows(es_terciles(inf_cz, INFORMALITY_COUNTS, "cz_id", HET_DIMS, family = "pois"),
+                      es_terciles(inf_cz, INFORMALITY_GAP, "cz_id", HET_DIMS)) |>
+  mutate(outcome = factor(outcome, levels = OUTCOME_LEVELS))
 write_csv(inf_terc, file.path(COEFS_DIR, "informality_terciles.csv"))
 
 ####################################################################################################
 ### figures ###
 ####################################################################################################
 
-Y_LAB  <- "Estimate Relative to 2007 (units in panel title)"
+Y_LAB  <- "Estimate Relative to 2007 (log points; PPML except the gap)"
 FACETS <- facet_wrap(~outcome, scales = "free_y", ncol = 3)
-LABELS <- scales::label_number(accuracy = 0.01)
+LABELS <- scales::label_percent(accuracy = 1)
 
 ## 1. main effect ##---------------------------------------------------------------------------------
 p <- inf_coefs |>

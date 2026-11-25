@@ -1,10 +1,10 @@
 ####################################################################################################
 ## 01: data cleaning
-## last edited: 10/22/2026
+## last edited: 11/24/2026
 ## by kieran
 ## does: loads raw data, cleans it, and builds every analysis dataset used downstream.
 ## reads:  dropbox kieran/data/raw/*, plus the TRAC, IPUMS, QCEW, dorn crosswalk and
-##         generated_data files elsewhere in the dropbox
+##         generated_data files in the main folder
 ## writes: dropbox kieran/data/clean/*.rds (read by 02_vulnerability.r and the question scripts)
 ####################################################################################################
 
@@ -197,10 +197,7 @@ county_pop_fips <- get_decennial(geography = "county", variables = "P001001", ye
 
 ## 4. farm counts ##-------------------------------------------------------------------------------
 # number of farm operations by county FIPS, the denominator for hired workers per farm. pulled as
-# county totals (domain TOTAL); national sums match the published census (2.13m / 2.20m / 2.11m /
-# 2.04m farms, 2002-2017). (per-acre labor measures were dropped: harvested cropland is tiny in
-# urban places and the ratios explode there. the landuse.csv cropland item was also wrong in 2002 and
-# 2012; see agcensus_api.R.)
+# county totals (domain TOTAL). 
 farm_counts <- farms_landvalue |>
   filter(short_desc == "FARM OPERATIONS - NUMBER OF OPERATIONS", !is.na(county_ansi)) |>
   transmute(county_fips = sprintf("%02d%03d", as.integer(state_fips_code), as.integer(county_ansi)),
@@ -208,19 +205,18 @@ farm_counts <- farms_landvalue |>
 stopifnot(!anyDuplicated(farm_counts[c("county_fips", "year")]))
 
 ## 5. secure communities activation dates ##--------------------------------------------------------
-# official county-level SC activation schedule from ICE: one activation date per county FIPS, with the continuous treatment:
-#   earliness_norm  (max activation date - date_j) / (max - min), day resolution, min/max over all
-#                   activation dates, so 1 = earliest and 0 = latest activator
-#   earliness_rank  1 - percentile rank of the activation date
-#   exposure_years  years between the county's activation and the last activation (22 Jan 2013): the
-#                   extra years of SC exposure an earlier county had. the same variable as
-#                   earliness_norm in years (earliness_norm x 4.24), the treatment in the outcome models
+# official county-level SC activation schedule from ICE: one activation date per county. with the continuous treatment
+# we use earliness_norm = (max activation date - date_j) / (max - min), at the day level, min/max are over all
+# activation dates, so 1 = earliest and 0 = latest activator
+# earliness_rank = 1 - percentile rank of the activation date
+# exposure_years = years between the county's activation and the last activation (22 Jan 2013): the
+# additional years of SC exposure an earlier county had. the same variable as
+# earliness_norm in years (earliness_norm x 4.24), the treatment in the outcome models
 # ICE names are matched to census county names with the independent-city suffix kept, so a city and
-# the county sharing its name (VA Bedford, MD Baltimore, MO St. Louis) each keep their own date. a few
-# places are listed under other names: New York City covers the five boroughs, the Alaska areas use
-# pre-2008 boundaries (mapped to the boroughs carved from them), Honolulu HI is listed as Oahu, and
-# Ste. Genevieve MO is spelled Saint Genevieve. counties ICE does not list (e.g. Oglala Lakota SD)
-# have no date; the unmatched ICE rows are all territories.
+# the county sharing its name (VA Bedford, MD Baltimore, MO St. Louis) each keep their own date. 
+# NOTE: a few places are listed under other names: New York City covers the five boroughs, the Alaska areas use
+# pre-2008 boundaries, Honolulu HI is listed as Oahu, and Ste. Genevieve MO is spelled Saint Genevieve. 
+# counties ICE does not list (e.g. Oglala Lakota SD) have no date. the unmatched ICE rows are all territories.
 act_key <- \(x) county_key(str_remove(x, " County$| Parish$| Borough$| Census Area$| Municipality$| City and Borough$"))
 
 ice_aliases <- tribble(
@@ -258,15 +254,7 @@ activation_fips <- activation_matched |>
          earliness_rank = 1 - percent_rank(activation_date),
          exposure_years = as.numeric(max(activation_date) - activation_date) / 365.25)
 
-## 6. analysis sample ##---------------------------------------------------------------------------
-# no agricultural-county restriction: every county in the Census of Ag enters main, and every CZ that
-# contains one enters the CZ panels. outcomes are shares (of working-age population, cropland or farm
-# expenses), so places with little farming add small, noisy changes rather than bias, and how much a
-# place relied on immigrant farm labor is reported as heterogeneity instead (section 19).
-# (an earlier version kept ERS farming-dependent counties plus counties with >= 1% of land in farms in
-# 2002; the farmland figures it used were understated ~4x, see agcensus_api.R.)
-
-## 7. outcome varaibles ##---------------------------------------------------------------------------
+## 6. outcome varaibles ##---------------------------------------------------------------------------
 # cleans hired farm labor data, giving each concept its own column per county-year.
 # safe_sum -> NA (not a false 0) when every value in the group is missing.
 safe_sum <- function(value, cond) {
@@ -285,14 +273,11 @@ hired_labor_controls <- hired_labor |>
     .groups = "drop"
   )
 
-## 8. develop exposure vulnerability proxy ##---------------------------------------------------------
-# counties with identical migrant share of working population may have heterogeneity in realized SC-related
-# deportations. this is likely a function of local jail processing, enforcement strength, preexisting agreements etc.
-# we want data that will act as both an exposure heterogeneity proxy and as a test for
-# the extent to which those underlying baseline characteristics predict deportation intensity ex post.
+## 7. develop exposure vulnerability proxy ##---------------------------------------------------------
+# build jail stock and flow related vulnerability measures 
 
-# local jail capacity baseline, from BJS's Census of Jail Facilities, 2006 (ICPSR 26602) - the last full
-# census of US jail jurisdictions before SC's 2008 rollout.
+# local jail capacity baseline, from BJS's Census of Jail Facilities, 2006 (ICPSR 26602). 
+# last full census of US jail jurisdictions before SC's 2008 rollout.
 zcta_county_lookup <- zcta_county_crosswalk |>
   mutate(
     zip         = sprintf("%05d", ZCTA5),
@@ -322,7 +307,7 @@ jail_facility_capacity <- jail_facilities_2006 |>
 
 # ~1/3 of agencies report no rated capacity for any facility, but nearly all report persons confined
 # (V18, agency level). the two track closely where both exist, so missing rated
-# capacity is imputed as persons confined / the median confined-to-rated ratio, and flagged with a binary indicator for imputation. (CONFIRM APPROACH)
+# capacity is imputed as persons confined / the median confined-to-rated ratio, and flagged with a binary indicator for imputation. 
 confined_to_rated <- with(jail_facility_capacity,
   median(persons_confined / rated_capacity_total, na.rm = TRUE))
 
@@ -414,7 +399,7 @@ message(sprintf(
 ))
 
 
-## 9. merge for main analysis df ##-------------------------------------------------------------------
+## 8. merge for main analysis df ##-------------------------------------------------------------------
 # census of ag counties with an SC activation date (section 5), one row per county and census year.
 # 2002 predates SC entirely, so it is a pre-treatment point for checking parallel trends against 2007.
 main <- expenditures_clean |>
@@ -435,7 +420,7 @@ main <- expenditures_clean |>
   mutate(hired_workers_per_farm = hired_workers / na_if(total_farms, 0))
 stopifnot(!anyDuplicated(main[c("county_id", "year")]))
 
-## 10. candidate vulnerability measures ##----------------------------------------------------------
+## 9. candidate vulnerability measures ##----------------------------------------------------------
 # baseline county characteristics that plausibly shift how hard SC hit a place, as continuous
 # pre-period values (het_<m>_val). 02_vulnerability.r tests which best predicts removals; het_hispnc_val
 # (2000 Census) is added in section 19.
@@ -466,7 +451,7 @@ main <- main |>
   left_join(het_measures |> select(-county), by = c("state", "county_key")) |>
   select(-county_key)
 
-## 11. SC removals ##-------------------------------------------------------------------------------
+## 10. SC removals ##-------------------------------------------------------------------------------
 # community-channel SC removals (section 2) by county, for 02_vulnerability.r, which tests which
 # baseline measure best predicts how hard SC hit a place. every county with an activation date, keyed
 # by FIPS so they can be summed to CZs:
@@ -501,7 +486,7 @@ removals_county <- activation_fips |>
             .groups = "drop")
 stopifnot(!anyDuplicated(removals_county$county_fips))
 
-## 12. ACS ag workforce by nativity (IPUMS) ##------------------------------------------------------
+## 11. ACS ag workforce by nativity (IPUMS) ##------------------------------------------------------
 # yearly (2005-2022) county counts of employed working-age (16-64) ag workers, total and by nativity,
 # from the IPUMS USA ACS 1-year extract. ag = IND1990 010 crops, 011 livestock, 030 ag services n.e.c.
 # (excludes 012 veterinary, 020 landscaping, 031 forestry, 032 fishing). foreign-born = CITIZEN 2-5
@@ -518,10 +503,8 @@ stopifnot(!anyDuplicated(removals_county$county_fips))
 #
 # the microdata only identify PUMAs (100k+ residents), so each PUMA's totals are allocated to its
 # counties by population share. rural counties sharing a PUMA therefore get the same ag share of
-# population - this measure cannot distinguish a farm county from a town county within one PUMA.
-# 2005-2011 samples use 2000 PUMAs, 2012-2021 use 2010 PUMAs and 2022 uses 2020 PUMAs; each gets its
-# own crosswalk (puma_vintage() below).
-# 2020 ACS was collected under COVID with experimental weights - treat with caution.
+# population. 2005-2011 samples use 2000 PUMAs, 2012-2021 use 2010 PUMAs and 2022 uses 2020 PUMAs.
+# each gets its own crosswalk (puma_vintage() below).
 IPUMS_FILE   <- file.path(DROPBOX, "ipums_usa", "acs_2005_2022_sc_agriculture.dta")
 AG_IND1990   <- c(10, 11, 30)
 ACS_YEARS    <- 2005:2022
@@ -710,7 +693,7 @@ message(sprintf(
   2007L
 ))
 
-## 13. long panel for the ACS labor outcomes ##-----------------------------------------------------
+## 12. long panel for the ACS labor outcomes ##-----------------------------------------------------
 # county x year (2005-2022) analysis panel: the same counties as main, with the ACS ag workforce
 # outcomes and the candidate vulnerability measures attached. where an independent city shares its name with a county (e.g. VA Fairfax), the county is kept,
 # matching how the ag census names counties.
@@ -731,7 +714,7 @@ message(sprintf("ACS long panel: %d counties x %d years (%d of %d main counties)
                 n_distinct(acs_panel$county_id), n_distinct(acs_panel$year),
                 n_distinct(acs_panel$county_id), n_distinct(main$county_id)))
 
-## 14. commuting-zone version of the ACS long panel ##----------------------------------------------
+## 13. commuting-zone version of the ACS long panel ##----------------------------------------------
 # CZs (Autor-Dorn, 741 nationally) usually contain whole PUMAs, so CZ outcomes are close to direct
 # survey estimates rather than population allocations, and the same fixed CZs are used under the 2000,
 # 2010 and 2020 PUMA definitions. treatment and het measures are aggregated from counties.
@@ -857,7 +840,7 @@ stopifnot(!anyDuplicated(acs_cz_panel[c("czone", "year")]))
 message(sprintf("ACS CZ panel: %d CZs x %d years; allocation gap %.4f%%",
                 n_distinct(acs_cz_panel$czone), n_distinct(acs_cz_panel$year), 100 * cz_total_gap))
 
-## 15. QCEW ag employment long panel ##------------------------------------------------------------
+## 14. QCEW ag employment long panel ##------------------------------------------------------------
 # yearly county annual-average employment from the BLS QCEW (employer UI filings), private ownership,
 # for NAICS 11 (ag, forestry, fishing, hunting), 111 (crop production), 112 (animal production) and
 # 115 (support activities, incl. farm labor contractors in 1151). 4-digit codes are too suppressed in
@@ -918,7 +901,7 @@ message(sprintf(
         collapse = " / ")
 ))
 
-## 16. QCEW at the commuting-zone level, suppressed cells imputed ##--------------------------------
+## 15. QCEW at the commuting-zone level, suppressed cells imputed ##--------------------------------
 # BLS suppresses about 45% of county x NAICS 11 x year employment cells, and almost every CZ contains a
 # suppressed county, so CZ totals need those cells filled in. establishment counts are published for
 # nearly every suppressed cell and state totals for nearly every state, so each suppressed county x
@@ -1031,7 +1014,7 @@ message(sprintf(
   100 * with(filter(qcew_imputed, !str_ends(county_fips, "999"), !statefip %in% c("72", "78")), sum(emp_imp[!county_fips %in% cw_cty_cz$county_fips], na.rm = TRUE) / sum(emp_imp, na.rm = TRUE))
 ))
 
-## 17. crop mix: labor-intensive acreage ##---------------------------------------------------------
+## 16. crop mix: labor-intensive acreage ##---------------------------------------------------------
 # census of ag county acreage for the two hand-harvest crop groups, pulled as single group totals
 # (pull_all_cropmix() in agcensus_api.R): vegetables harvested in the open, and orchards bearing &
 # non-bearing (census orchards include vineyards, citrus and tree nuts). outcomes are shares of the
@@ -1103,7 +1086,7 @@ message(sprintf("crop mix: %d county / %d CZ units; balanced (li / veg / orch) c
                 n_distinct(crop_panel$county_id), n_distinct(crop_cz_panel$czone),
                 n_balanced(crop_panel, "county_id"), n_balanced(crop_cz_panel, "czone")))
 
-## 18. census of ag outcomes at the commuting-zone level ##----------------------------------------
+## 17. census of ag outcomes at the commuting-zone level ##----------------------------------------
 # the Census of Ag outcomes in main (section 9), rebuilt for CZs by summing numerators and
 # denominators over every county in the CZ:
 #   mech_share_broad          machinery-related expenses / total operating expenses
@@ -1148,7 +1131,7 @@ message(sprintf("census of ag CZ panel: %d CZs; balanced (mech / labor share / h
                 n_distinct(agc_cz_panel$czone),
                 paste(map_int(AGC_OUTCOMES, \(v) n_distinct(agc_cz_panel$czone[!is.na(agc_cz_panel[[v]])])), collapse = " / ")))
 
-## 19. treatment, controls and baseline characteristics ##----------------------------------------
+## 18. treatment, controls and baseline characteristics ##----------------------------------------
 # unit-level inputs for the event-study specification in 00_setup.r (the triple-interaction design
 # in dropbox slides/sc_agriculture_slides.tex), attached to every panel:
 #   earliness_norm, earliness_rank, exposure_years  built in section 5
@@ -1156,22 +1139,38 @@ message(sprintf("census of ag CZ panel: %d CZs; balanced (mech / labor share / h
 #   gr_severity     Great Recession severity, ln private emp 2009 - ln private emp 2007
 #   het_hispnc_val  Hispanic noncitizens / working-age pop., 2000 Census (the vulnerability measure)
 #   ag_share_base   ACS ag workers / working-age pop., 2006-07 average (section 12)
-#   log_pop_2010    log 2010 population (an urbanization proxy)
+#   log_pop_2000    log 2000 population (the size control; fixed before SC began)
+#   log_pop_2010    log 2010 population (robustness only: measured after activation started)
 #   rel_fb_ag       reliance on immigrant farm labor: foreign-born ag workers / working-age pop.,
 #                   2006-07 (ACS, section 12)
 #   rel_labor       reliance on hired farm labor: hired + contract labor / farm operating expenses,
 #                   2002 and 2007 pooled (census of ag, section 18), NA unless expenses are disclosed
 #                   in both years (and, for a CZ, in every county)
-# border distance, recession severity and het_hispnc come from the dropbox generated_data files.
-# CZs take the 2000 population-weighted mean of their counties' earliness and exposure years.
-# ag_share_base and log_pop_2010 are baseline characteristics interacted with year in the outcome
-# scripts' robustness check (did early places differ in ways that predict their trends?).
+# border distance and recession severity come from the dropbox generated_data files; het_hispnc and
+# 2000 population from the NHGIS 2000 tables. CZs take the 2000 population-weighted mean of their
+# counties' earliness and exposure years. ag_share_base is a baseline characteristic interacted with
+# year in the outcome scripts' robustness check (did early places differ in ways that predict their
+# trends?).
 read_gen <- \(f) read_dta(file.path(GEN_DIR, f)) |> zap_labels()
 fips5    <- \(x) sprintf("%05d", as.integer(x))
 
-nhgis_2000 <- read_gen("county_nhgis_baseline.dta") |>
-  transmute(county_fips = fips5(cty_fips), czone = as.integer(czone), totpop_2000,
-            hisp_fb_noncit_2000, workingage_pop_2000)
+# 2000 census county baseline, built from the NHGIS tables: total population (SF1 P001), working-age
+# population 18-64 (SF1 P012) and Hispanic foreign-born noncitizens (SF3 PCT063). this reproduces
+# generated_data/county_nhgis_baseline.dta exactly, but that file merged on dorn's 1990 county codes
+# and so dropped Miami-Dade (12086) and three Alaska boroughs; here CZs come from cw_cty_cz, which
+# maps those codes (section 13).
+nhgis_dir  <- file.path(DROPBOX, "nhgis")
+read_nhgis <- \(f, cols) read_csv(file.path(nhgis_dir, f), show_col_types = FALSE, col_select = c(STATEA, COUNTYA, all_of(cols))) |>
+  mutate(county_fips = paste0(STATEA, COUNTYA), .keep = "unused")
+age_18_64  <- sprintf("FMZ%03d", c(5:17, 28:40))   # male and female, 18-19 through 62-64
+
+nhgis_2000 <- read_nhgis("total pop. x hispanic-latino/nhgis0017_ds146_2000_county.csv", "FL5001") |>
+  left_join(read_nhgis("total pop. x sex x age/nhgis0019_ds146_2000_county.csv", age_18_64), by = "county_fips") |>
+  left_join(read_nhgis("foreign-born pop. x citizenship x hispanic/nhgis0015_ds151_2000_county.csv", "G02002"), by = "county_fips") |>
+  transmute(county_fips, totpop_2000 = FL5001, workingage_pop_2000 = rowSums(pick(all_of(age_18_64))),
+            hisp_fb_noncit_2000 = G02002) |>
+  inner_join(cw_cty_cz, by = "county_fips")
+stopifnot(nrow(nhgis_2000) == 3141, !anyDuplicated(nhgis_2000$county_fips))
 
 cexp_county_fips <- activation_fips |>
   left_join(nhgis_2000 |> transmute(county_fips, het_hispnc_val = hisp_fb_noncit_2000 / workingage_pop_2000), by = "county_fips") |>
@@ -1186,15 +1185,17 @@ rel_labor_of <- \(d) d |> summarise(rel_labor = if (n() == 2 * n_distinct(county
 cexp_county <- cexp_county_fips |>
   left_join(acs_ag_panel |> distinct(county_fips, ag_share_base = ag_total_share_base, rel_fb_ag = ag_fb_share_base), by = "county_fips") |>
   left_join(rel_labor_parts |> group_by(county_fips) |> rel_labor_of(), by = "county_fips") |>
+  left_join(nhgis_2000 |> transmute(county_fips, log_pop_2000 = log(totpop_2000)), by = "county_fips") |>
   left_join(county_pop_fips |> transmute(county_fips, log_pop_2010 = log(pop)), by = "county_fips") |>
   select(county_fips, earliness_norm, earliness_rank, exposure_years, border_dist_km, gr_severity, het_hispnc_val,
-         ag_share_base, log_pop_2010, rel_fb_ag, rel_labor)
+         ag_share_base, log_pop_2000, log_pop_2010, rel_fb_ag, rel_labor)
 
 cexp_cz <- nhgis_2000 |>
   left_join(cexp_county_fips |> select(county_fips, earliness_norm, earliness_rank, exposure_years), by = "county_fips") |>
   group_by(czone) |>
   summarise(across(c(earliness_norm, earliness_rank, exposure_years), \(x) weighted.mean(x, totpop_2000, na.rm = TRUE)),
             het_hispnc_val = sum(hisp_fb_noncit_2000, na.rm = TRUE) / sum(workingage_pop_2000, na.rm = TRUE),
+            log_pop_2000   = log(sum(totpop_2000)),
             .groups = "drop") |>
   mutate(across(c(earliness_norm, earliness_rank, exposure_years), \(x) if_else(is.nan(x), NA_real_, x))) |>
   left_join(read_gen("czone_border_distance.dta") |> transmute(czone = as.integer(czone), border_dist_km), by = "czone") |>

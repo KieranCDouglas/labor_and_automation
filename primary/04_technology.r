@@ -9,7 +9,7 @@
 ## reads:  dropbox kieran/data/clean/{agc_cz_panel, main, crop_cz_panel, crop_panel}.rds (from 01_clean.r),
 ##         kieran/output/vulnerability_choice.csv (from 02_vulnerability.r)
 ## writes: dropbox kieran/output/coefs/technology_*.csv, output/tables/technology_*.tex,
-##         figures/technology/*.png
+##         figures/technology/*.png, figures/diagnostics/technology_*.png
 ####################################################################################################
 
 ####################################################################################################
@@ -115,6 +115,51 @@ crop_terc_rob <- bind_rows(
   mutate(variant = factor(variant, levels = c("Main specification", "+ baseline characteristics x year", "+ size band x year FE")))
 write_csv(crop_terc_rob, file.path(COEFS_DIR, "technology_cropmix_terciles_robustness.csv"))
 
+## by vulnerability quartile, with and without the population control, counties and CZs ##----------
+# the same split as Q1 (03_labor.r): the per-year exposure effect within each quartile of
+# vulnerability (es_group_fit), pooled and by quartile, with the main controls ("after") and without
+# log population x year ("before"). if SC pushed farms from labor toward capital or out of
+# labor-intensive crops, it should show where the Q1 labor effects are, in the top quartile. 2002 is
+# the only pre-period census year, so each pre-trend test is a single coefficient. both models use
+# the same units (those with log population).
+N_QUART      <- 4
+POP_MODELS   <- list(before = setdiff(ES_CONTROLS, ES_POP), after = ES_CONTROLS)
+ALL_OUTCOMES <- c(TECH_OUTCOMES, CROP_OUTCOMES)
+quart_panels <- list(county = list(tech = tech_panels$county, crop = crop_panels$county, unit = "county_id"),
+                     cz     = list(tech = tech_panels$cz,     crop = crop_panels$cz,     unit = "cz_id")) |>
+  map(\(p) modify_at(p, c("tech", "crop"), \(d) filter(d, !is.na(.data[[ES_POP]]))))
+quart_data <- \(l, o) quart_panels[[l]][[if (o %in% names(TECH_OUTCOMES)) "tech" else "crop"]]
+
+quart_mods <- expand_grid(level = names(quart_panels), outcome = names(ALL_OUTCOMES), model = names(POP_MODELS)) |>
+  mutate(pooled = pmap(list(level, outcome, model), \(l, o, m)
+                       fit_es(quart_data(l, o), ALL_OUTCOMES[[o]], quart_panels[[l]]$unit, controls = POP_MODELS[[m]])),
+         quart  = pmap(list(level, outcome, model), \(l, o, m)
+                       es_group_fit(quart_data(l, o), ALL_OUTCOMES[[o]], quart_panels[[l]]$unit, VULN, N_QUART, controls = POP_MODELS[[m]])))
+
+# year-by-year coefficients: quartile 1-4 from the quartile model, quartile NA from the pooled model
+tech_quart_coefs <- quart_mods |>
+  mutate(c = map2(pooled, quart, \(mp, mq) bind_rows(
+    es_coefs(mp),
+    map(seq_len(N_QUART), \(g) es_coefs(mq, paste0("x_g", g)) |> mutate(quartile = g)) |> list_rbind()))) |>
+  select(level, outcome, model, c) |>
+  unnest(c)
+write_csv(tech_quart_coefs, file.path(COEFS_DIR, "technology_quartile_coefs.csv"))
+
+tech_quart_summary <- quart_mods |>
+  mutate(s = map2(pooled, quart, \(mp, mq) bind_rows(
+    es_summary(mp) |> mutate(group = "All units"),
+    map(seq_len(N_QUART), \(g) es_summary(mq, paste0("x_g", g)) |> mutate(group = paste0("Q", g))),
+    es_group_gap(mq, N_QUART) |> mutate(group = paste0("Q", N_QUART, " - Q1"))))) |>
+  select(level, outcome, model, s) |>
+  unnest(s)
+write_csv(tech_quart_summary, file.path(COEFS_DIR, "technology_quartile_summary.csv"))
+
+tech_quart_summary |>
+  transmute(level, model, outcome, group, cell = sprintf("%7.3f (%.3f)", post_avg, post_se)) |>
+  pivot_wider(names_from = group, values_from = cell) |>
+  arrange(level, factor(outcome, levels = OUTCOME_LEVELS), desc(model)) |>
+  print(n = Inf, width = Inf)
+
 tech_summary |>
   transmute(spec, outcome, term = if_else(term == "exposure", "per year", "x vuln"),
             cell = sprintf("%7.3f (%.3f) pre p %.2f", post_avg, post_se, pre_p)) |>
@@ -173,3 +218,45 @@ p <- crop_terc_rob |>
                   "Average post-2007 effect per year of exposure (pp of cropland)", labels = scales::label_number(accuracy = 0.1)) +
   theme(strip.text.x = element_text(size = 8))
 ggsave(fig_path("technology", "cropmix_terciles_robustness.png"), p, width = 18, height = 5, dpi = 300)
+
+## 6. by vulnerability quartile, and the population-control diagnostics ##---------------------------
+# top row: labor vs capital within farms. bottom row: crop mix. by-quartile figures share each
+# outcome's y range between the before and after models so they compare directly.
+COL_QUART   <- c(COL_LIGHT, COL_BAR, COL_MID, COL_POINT)
+QUART_LABS  <- c("Q1 (least vulnerable)", "Q2", "Q3", "Q4 (most vulnerable)")
+LEVEL_LABEL <- c(county = "Counties", cz = "Commuting Zones")
+MODEL_LABEL <- c(before = "Before: border distance + recession x year", after = "After: + log 2000 population x year")
+QUART_CAP   <- "Top row: labor vs capital within farms. Bottom row: labor-intensive crops (pp of cropland)."
+quart_plot_data <- tech_quart_coefs |>
+  mutate(outcome = factor(outcome, levels = OUTCOME_LEVELS))
+
+walk(names(LEVEL_LABEL), \(l) {
+  y_range <- quart_plot_data |>
+    filter(level == l, !is.na(quartile)) |>
+    group_by(outcome) |>
+    summarise(y = list(range(c(conf.low, conf.high))), .groups = "drop") |>
+    unnest(y) |>
+    mutate(year = ES_REF)
+  walk(names(MODEL_LABEL), \(m) {
+    p <- quart_plot_data |>
+      filter(level == l, model == m, !is.na(quartile)) |>
+      mutate(quartile = factor(quartile, levels = 1:4, labels = QUART_LABS)) |>
+      es_plot(sprintf("Effect of One More Year of SC Exposure by Quartile of Baseline %s, %s (95%% CI)\n%s",
+                      VULN_LABEL, LEVEL_LABEL[[l]], MODEL_LABEL[[m]]),
+              Y_LAB, color = "quartile", palette = COL_QUART, breaks = BREAKS, facet = FACETS,
+              labels = scales::label_number(accuracy = 0.01), dodge_width = 2.5) +
+      geom_blank(data = y_range, aes(x = year, y = y), inherit.aes = FALSE) +
+      labs(caption = paste(QUART_CAP, "y-axes match across the before and after figures."))
+    if (m == "after") ggsave(fig_path("technology", sprintf("technology_quartiles_%s.png", l)), p, width = 13, height = 8, dpi = 300)
+    ggsave(fig_path("diagnostics", sprintf("technology_quartiles_%s_%s.png", l, m)), p, width = 13, height = 8, dpi = 300)
+  })
+
+  p <- quart_plot_data |>
+    filter(level == l, is.na(quartile)) |>
+    mutate(model = factor(MODEL_LABEL[model], levels = MODEL_LABEL)) |>
+    es_plot(sprintf("Effect of One More Year of SC Exposure, Before and After the Population Control: %s (95%% CI)", LEVEL_LABEL[[l]]),
+            Y_LAB, color = "model", palette = c(COL_BAR, COL_POINT), breaks = BREAKS, facet = FACETS,
+            labels = scales::label_number(accuracy = 0.01), dodge_width = 1.5) +
+    labs(caption = QUART_CAP)
+  ggsave(fig_path("diagnostics", sprintf("technology_pooled_%s.png", l)), p, width = 13, height = 8, dpi = 300)
+})
